@@ -27,7 +27,7 @@ def load_json_data(filepath):
     return data
 
 
-def filter_training_data(data, levels=[1, 2, 3, 4], num_augmentations=3):
+def filter_training_data(data, levels=[1, 3, 4], num_augmentations=3):
     """
     Filter training data to get specific levels and augmentation indices.
     
@@ -39,41 +39,37 @@ def filter_training_data(data, levels=[1, 2, 3, 4], num_augmentations=3):
     Returns:
         Filtered list of examples
     """
-    # Group by problem_name and augmentation_idx
-    grouped = defaultdict(lambda: defaultdict(list))
-    
+    # Collect up to `num_augmentations` examples per problem name, for the specified levels.
+    # Only include problem names for which 3 augmentations are present for each selected level.
+    per_problem_level_aug = defaultdict(lambda: defaultdict(dict))
     for example in data:
         metadata = example.get('metadata', {})
         problem_name = metadata.get('problem_name')
         level = metadata.get('level')
-        aug_idx = metadata.get('augmentation_idx')
-        
-        if problem_name and level is not None and aug_idx is not None:
-            grouped[problem_name][aug_idx].append(example)
-    
-    # Filter and select examples
+        augmentation_idx = metadata.get('augmentation_idx')
+        if (
+            problem_name
+            and level in levels
+            and augmentation_idx is not None
+        ):
+            # use dict to avoid duplicates if dataset is messy
+            per_problem_level_aug[problem_name][level][augmentation_idx] = example
+
     filtered = []
-    problem_count = 0
-    
-    for problem_name, aug_dict in grouped.items():
-        problem_count += 1
-        # Take first num_augmentations augmentation indices
-        selected_aug_indices = sorted(aug_dict.keys())[:num_augmentations]
-        
-        for aug_idx in selected_aug_indices:
-            examples_for_aug = aug_dict[aug_idx]
-            # Filter by level (note: levels are 0-indexed in data, but user refers to them as 1-4)
-            # level 1 = index 0, level 2 = index 1, etc.
-            for example in examples_for_aug:
-                ex_level = example['metadata']['level']
-                # Check if level is in range (adjusting for 0-indexing)
-                if ex_level in [l - 1 for l in levels]:
-                    filtered.append(example)
-    
-    print(f"Filtered {len(filtered)} training examples from {problem_count} problems")
-    print(f"  Levels: {levels} (adjusted to 0-indexed: {[l-1 for l in levels]})")
-    print(f"  Augmentations per problem: {num_augmentations}")
-    
+    for problem_name, level_aug_dict in per_problem_level_aug.items():
+        has_all = True
+        for lvl in levels:
+            aug_idxs = list(level_aug_dict[lvl].keys()) if lvl in level_aug_dict else []
+            if len(aug_idxs) < num_augmentations:
+                has_all = False
+                break
+        if has_all:
+            for lvl in levels:
+                aug_dict = level_aug_dict[lvl]
+                selected_augs = sorted(aug_dict.keys())[:num_augmentations]
+                for aug_idx in selected_augs:
+                    filtered.append(aug_dict[aug_idx])
+    print(f"Filtered {len(filtered)} training examples: 3 augmentations each for levels {levels}, per problem name.")
     return filtered
 
 
@@ -89,21 +85,15 @@ def filter_eval_data(data, level=4):
         Filtered list of examples
     """
     filtered = []
-    problem_names = set()
-    
+    seen_problems = set()
     for example in data:
         metadata = example.get('metadata', {})
         ex_level = metadata.get('level')
         problem_name = metadata.get('problem_name')
-        
-        # Level 4 corresponds to index 3 (0-indexed)
-        if ex_level == level - 1:
+        if ex_level == 4 and problem_name not in seen_problems:
             filtered.append(example)
-            if problem_name:
-                problem_names.add(problem_name)
-    
-    print(f"Filtered {len(filtered)} evaluation examples (level {level}) from {len(problem_names)} problems")
-    
+            seen_problems.add(problem_name)
+    print(f"Filtered {len(filtered)} evaluation examples (level {level}) with one example per problem from {len(seen_problems)} problems")
     return filtered
 
 
@@ -195,8 +185,8 @@ def main():
     print("Filtering Data")
     print("=" * 80)
     
-    # Filter training data: levels 1-4, 3 augmentations per problem
-    filtered_train = filter_training_data(train_data, levels=[1, 2, 3, 4], num_augmentations=3)
+    # Filter training data: levels 1-3-4, 3 augmentations per problem
+    filtered_train = filter_training_data(train_data, levels=[1, 3, 4], num_augmentations=3)
     
     # Filter evaluation data: level 4 only
     filtered_eval = filter_eval_data(eval_data, level=4)
@@ -346,7 +336,6 @@ def main():
     print("\n" + "=" * 80)
     print("Optimization Complete!")
     print("=" * 80)
-
 
 if __name__ == "__main__":
     main()
