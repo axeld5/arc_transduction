@@ -463,7 +463,7 @@ def create_training_data_for_corpus(
     placeholders_per_augmentation: int = 20,
     data_dir: str = ".",
     output_dir: str = None,
-    save_by_concept: bool = True,
+    save_by_concept: bool = False,
     save_combined: bool = True,
     verbose: bool = True
 ) -> Dict[str, List[Dict[str, Any]]]:
@@ -475,7 +475,7 @@ def create_training_data_for_corpus(
         num_augmentations: Number of augmented versions per problem
         placeholders_per_augmentation: Number of placeholders per augmentation
         data_dir: Root directory containing corpus
-        output_dir: Directory to save output files (default: data_dir/generated_training_data_{method})
+        output_dir: Directory to save output files (default: data_dir)
         save_by_concept: Save separate files for each concept
         save_combined: Save one combined file with all data
         verbose: Print progress information
@@ -484,7 +484,7 @@ def create_training_data_for_corpus(
         Dictionary mapping concept names to their training examples
     """
     if output_dir is None:
-        output_dir = os.path.join(data_dir, f"generated_training_data_{method}")
+        output_dir = data_dir
     
     # Create output directory
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -529,7 +529,12 @@ def create_training_data_for_corpus(
     
     # Save combined file
     if save_combined:
-        combined_file = os.path.join(output_dir, "all_training_data.json")
+        # Use eval_data.json or train_data.json based on method
+        if method == "eval":
+            combined_file = os.path.join(output_dir, "eval_data.json")
+        else:
+            combined_file = os.path.join(output_dir, "train_data.json")
+        
         with open(combined_file, 'w', encoding='utf-8') as f:
             json.dump(combined_examples, f, indent=2)
         if verbose:
@@ -539,7 +544,7 @@ def create_training_data_for_corpus(
             print(f"{'='*60}")
     
     # Save summary statistics
-    summary_file = os.path.join(output_dir, "training_data_summary.json")
+    summary_file = os.path.join(output_dir, f"{method}_data_summary.json")
     summary = {
         'method': method,
         'total_concepts': len(concepts),
@@ -567,44 +572,63 @@ def create_training_data_for_corpus(
 if __name__ == "__main__":
     import sys
     
-    # Determine which method to use from command line argument
-    method = "eval"  # default
+    # Determine which method(s) to use from command line argument
+    methods = []  # Will contain methods to run
+    
     if len(sys.argv) > 1:
+        # If argument provided, use only that method
         if sys.argv[1] in ["eval", "leave_one_out"]:
-            method = sys.argv[1]
+            methods = [sys.argv[1]]
         else:
             print(f"Invalid method: {sys.argv[1]}")
             print("Usage: python create_train_data.py [eval|leave_one_out]")
+            print("  - No argument: Creates both eval_data.json and train_data.json")
+            print("  - eval: Creates only eval_data.json")
+            print("  - leave_one_out: Creates only train_data.json")
             sys.exit(1)
+    else:
+        # No argument: run both methods
+        methods = ["eval", "leave_one_out"]
     
     print("="*60)
     print("Training Data Generation for ConceptARC Corpus")
     print("="*60)
-    print(f"Method: {method}")
-    print("  - eval: Uses actual test examples")
-    print("  - leave_one_out: Uses only training examples (cross-validation)")
+    print(f"Methods to run: {', '.join(methods)}")
+    print("  - eval: Uses actual test examples -> eval_data.json")
+    print("  - leave_one_out: Uses only training examples -> train_data.json")
     print("")
     print("Configuration:")
     print("  - 30 augmented versions per problem")
     print("  - Level 0: Unmodified (ground truth in test output)")
-    print("  - Levels 1-6: 20 placeholders per level")
-    print(f"  - Total per problem: 30 × (1 + 20×6) = {30*(1+20*6)} examples")
+    print("  - Levels 1-6: 5 placeholders per level")
+    print(f"  - Total per problem: 30x(1 + 5x6) = {30*(1+5*6)} examples")
     print("  - Leave-one-out: Randomly selects 1 training example to hold out")
     print("="*60)
     print("")
     
-    result = create_training_data_for_corpus(
-        method=method,
-        num_augmentations=30,
-        placeholders_per_augmentation=20,
-        data_dir=".",
-        output_dir=None,  # Will auto-generate based on method
-        save_by_concept=True,
-        save_combined=True,
-        verbose=True
-    )
+    # Run each method
+    for method in methods:
+        print("\n" + "="*60)
+        print(f"RUNNING METHOD: {method}")
+        print("="*60)
+        print("")
+        
+        result = create_training_data_for_corpus(
+            method=method,
+            num_augmentations=30,
+            placeholders_per_augmentation=5,
+            data_dir=".",
+            output_dir=None,  # Will save to current directory
+            save_by_concept=False,  # Only save combined file
+            save_combined=True,
+            verbose=True
+        )
+        
+        print("\n" + "="*60)
+        print(f"Completed method: {method}")
+        print("="*60)
     
     print("\n" + "="*60)
-    print("Training data generation complete!")
+    print("All training data generation complete!")
     print("="*60)
 
