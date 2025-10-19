@@ -63,10 +63,10 @@ def from_data_to_problem(data: Dict[str, Any], include_test_output: bool = False
             problem_text += " ".join(map(str, row)) + "\n"
         
         if include_test_output:
-            problem_text += "Output:\n"
+            problem_text += "Output Placeholder:\n"
             for row in test_case['output']:
                 problem_text += " ".join(map(str, row)) + "\n"
-        
+        problem_text += "Output:\n"
         # Store the actual answer
         for row in test_case['output']:
             answer += " ".join(map(str, row)) + "\n"
@@ -618,7 +618,7 @@ if __name__ == "__main__":
             num_augmentations=30,
             placeholders_per_augmentation=5,
             data_dir=".",
-            output_dir=None,  # Will save to current directory
+            output_dir="./generated_data/",  # Will save to current directory
             save_by_concept=False,  # Only save combined file
             save_combined=True,
             verbose=True

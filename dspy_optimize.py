@@ -14,7 +14,7 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
 # Configure DSPy with OpenAI GPT-4
-lm = dspy.LM("openai/gpt-5-mini", temperature=1, api_key=api_key, max_tokens=32000)
+lm = dspy.LM("openai/gpt-5-nano", temperature=1, api_key=api_key, max_tokens=16000)
 dspy.configure(lm=lm)
 
 
@@ -186,7 +186,7 @@ def main():
     print("=" * 80)
     
     # Filter training data: levels 1-3-4, 3 augmentations per problem
-    filtered_train = filter_training_data(train_data, levels=[1, 3, 4], num_augmentations=3)
+    filtered_train = filter_training_data(train_data, levels=[1, 3, 4], num_augmentations=1)
     
     # Filter evaluation data: level 4 only
     filtered_eval = filter_eval_data(eval_data, level=4)
@@ -223,7 +223,7 @@ def main():
     print("=" * 80)
     
     evaluate = dspy.Evaluate(
-        devset=eval_set[:10],  # Use small subset for quick baseline
+        devset=eval_set,  # Use small subset for quick baseline
         metric=arc_metric,
         num_threads=4,
         display_table=True,
@@ -246,7 +246,7 @@ def main():
         num_threads=32,
         track_stats=True,
         reflection_minibatch_size=3,
-        reflection_lm=dspy.LM(model="openai/gpt-5", temperature=1.0, max_tokens=32000, api_key=api_key)
+        reflection_lm=dspy.LM(model="openai/gpt-5", temperature=1, max_tokens=16000, api_key=api_key)
     )
     
     optimized_program = optimizer.compile(
@@ -267,69 +267,25 @@ def main():
         display_table=True,
         display_progress=True
     )
-    
     optimized_score = evaluate_full(optimized_program)
     print(f"\nOptimized Score: {optimized_score}")
     print(f"Baseline Score: {baseline_score}")
-    print(f"Improvement: {optimized_score - baseline_score:.4f}")
     
     # Save optimized program
     print("\n" + "=" * 80)
     print("Saving Optimized Program")
     print("=" * 80)
-    
-    # Save the full program
-    optimized_program.save('optimized_program.json')
-    print("Saved optimized program to: optimized_program.json")
-    
-    # Extract and save the prompt to a text file
+
+    # Save only optimized_program.predict.signature.instructions to text
+    try:
+        instructions = optimized_program.predict.signature.instructions
+    except AttributeError:
+        instructions = ""
+
     with open('optimized_prompt.txt', 'w', encoding='utf-8') as f:
-        f.write("=" * 80 + "\n")
-        f.write("DSPy Optimized Prompt for ARC Problems\n")
-        f.write("=" * 80 + "\n\n")
-        
-        # Try to extract the prompt from the optimized program
-        try:
-            # Get the predictor
-            if hasattr(optimized_program, 'predictors'):
-                for i, predictor in enumerate(optimized_program.predictors()):
-                    f.write(f"\n--- Predictor {i+1} ---\n\n")
-                    
-                    # Get signature
-                    if hasattr(predictor, 'signature'):
-                        f.write(f"Signature: {predictor.signature}\n\n")
-                    
-                    # Get extended signature if available
-                    if hasattr(predictor, 'extended_signature'):
-                        f.write(f"Extended Signature:\n{predictor.extended_signature}\n\n")
-                    
-                    # Get demos/examples if available
-                    if hasattr(predictor, 'demos'):
-                        f.write(f"Number of demos: {len(predictor.demos)}\n\n")
-                        for j, demo in enumerate(predictor.demos[:3]):  # Show first 3 demos
-                            f.write(f"Demo {j+1}:\n")
-                            f.write(f"{demo}\n\n")
-            
-            # Write the full program representation
-            f.write("\n" + "=" * 80 + "\n")
-            f.write("Full Program Representation\n")
-            f.write("=" * 80 + "\n\n")
-            f.write(str(optimized_program))
-            
-        except Exception as e:
-            f.write(f"Error extracting detailed prompt: {e}\n\n")
-            f.write("Full program representation:\n")
-            f.write(str(optimized_program))
-        
-        f.write("\n\n" + "=" * 80 + "\n")
-        f.write("Optimization Results\n")
-        f.write("=" * 80 + "\n\n")
-        f.write(f"Baseline Score: {baseline_score}\n")
-        f.write(f"Optimized Score: {optimized_score}\n")
-        f.write(f"Improvement: {optimized_score - baseline_score:.4f}\n")
-        f.write(f"\nTraining examples: {len(train_subset)}\n")
-        f.write(f"Validation examples: {len(val_subset)}\n")
-        f.write(f"Evaluation examples: {len(eval_set)}\n")
+        f.write(instructions)
+
+    print("Saved optimized prompt instructions to: optimized_prompt.txt")
     
     print("Saved optimized prompt to: optimized_prompt.txt")
     
