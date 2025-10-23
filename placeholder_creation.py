@@ -12,7 +12,7 @@ def create_placeholder(problem_data: Dict[str, Any], ground_truth: List[List[int
         ground_truth: The actual solution matrix
         level: Difficulty level (1-6)
             1: Ground truth modified by random pixels (0 to max(width*2, 10))
-            2: Ground truth with one less row and one less col
+            2: Ground truth with random removal of up to 2 rows and up to 2 columns (at least one dimension removed)
             3: Random crop with dimensions below 7x7 (random position and size)
             4: 3x3 zeros matrix
             5: Random matrix (same size as ground truth)
@@ -39,13 +39,40 @@ def create_placeholder(problem_data: Dict[str, Any], ground_truth: List[List[int
                 placeholder_matrix[i][j] = random.randint(0, 9)
     
     elif level == 2:
-        # Level 2: Ground truth with one less row, one less col
-        if target_height > 1 and target_width > 1:
-            placeholder_matrix = [[ground_truth[i][j] for j in range(target_width - 1)] 
-                                  for i in range(target_height - 1)]
-        else:
-            # Fallback if dimensions are too small
-            placeholder_matrix = [[0]]
+        # Level 2: Random removal of up to 2 rows and up to 2 columns
+        # At least one row OR one column must be removed
+        
+        # Determine how many rows and columns can be removed
+        max_rows_to_remove = min(2, target_height - 1)  # Keep at least 1 row
+        max_cols_to_remove = min(2, target_width - 1)   # Keep at least 1 col
+        
+        # Randomly choose how many to remove
+        rows_to_remove = random.randint(0, max_rows_to_remove)
+        cols_to_remove = random.randint(0, max_cols_to_remove)
+        
+        # Ensure at least one row OR one column is removed
+        if rows_to_remove == 0 and cols_to_remove == 0:
+            # Force removal of at least one dimension
+            if max_rows_to_remove > 0 and max_cols_to_remove > 0:
+                # Both are possible, randomly pick one
+                if random.random() < 0.5:
+                    rows_to_remove = random.randint(1, max_rows_to_remove)
+                else:
+                    cols_to_remove = random.randint(1, max_cols_to_remove)
+            elif max_rows_to_remove > 0:
+                rows_to_remove = random.randint(1, max_rows_to_remove)
+            elif max_cols_to_remove > 0:
+                cols_to_remove = random.randint(1, max_cols_to_remove)
+            else:
+                # Both dimensions are 1, can't remove anything - fallback
+                placeholder_matrix = [[0]]
+                return placeholder_matrix
+        
+        new_height = target_height - rows_to_remove
+        new_width = target_width - cols_to_remove
+        
+        placeholder_matrix = [[ground_truth[i][j] for j in range(new_width)] 
+                              for i in range(new_height)]
     
     elif level == 3:
         # Level 3: Random crop with dimensions below 7x7 that fit within ground truth
