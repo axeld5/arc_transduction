@@ -62,7 +62,7 @@ def evaluate_model_vllm(
     
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    llm = LLM(model=model_path, trust_remote_code=True, gpu_memory_utilization=0.5)
+    llm = LLM(model=model_path, trust_remote_code=True, gpu_memory_utilization=0.5, max_model_len=16000)
     
     sampling_params = SamplingParams(
         max_tokens=4096,
