@@ -198,6 +198,13 @@ def run_curriculum_training(
 ):
     """
     Run curriculum training: Direct RL training by level (1-6).
+    
+    Training is cumulative: Level N includes data from levels 1 through N.
+    - Level 1: trains on level 1 data only
+    - Level 2: trains on levels 1 + 2 data
+    - Level 3: trains on levels 1 + 2 + 3 data
+    - ... and so on
+    
     Each level has two training phases:
       - Phase 1: Dense reward (125 steps) - gives partial credit
       - Phase 2: Discrete reward (375 steps) - binary success/fail
@@ -207,7 +214,7 @@ def run_curriculum_training(
         eval_data_path: Path to evaluation data JSON
         base_output_dir: Base directory for saving models
         base_model: Base model to start from
-        rl_samples_per_level: Max samples to use per level
+        rl_samples_per_level: Max samples to use (cumulative across all levels)
         use_system_prompt: Whether to prepend optimized prompt to each sample
     """
     print(f"\n{'='*80}")
@@ -240,13 +247,18 @@ def run_curriculum_training(
         print(f"STEP {level}: RL Training for Level {level}")
         print(f"{'='*80}")
         
-        # Load data for this level
-        level_data = [ex for ex in all_train_data if ex['metadata']['level'] == level]
+        # Load data for this level AND all previous levels (cumulative)
+        level_data = [ex for ex in all_train_data if ex['metadata']['level'] <= level]
+        
+        print(f"Cumulative data: including levels 1-{level}")
+        print(f"Total samples before sampling: {len(level_data)}")
         
         # Sample data if too large
         if len(level_data) > rl_samples_per_level:
             random.seed(42 + level)
             level_data = random.sample(level_data, rl_samples_per_level)
+        
+        print(f"Training on {len(level_data)} samples")
         
         # Phase 1: Dense reward training (1/4 of steps)
         dense_steps = 125  # 1/4 of 500
