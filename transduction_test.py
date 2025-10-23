@@ -9,7 +9,7 @@ from unsloth import FastLanguageModel
 from datasets import Dataset
 from vllm import SamplingParams
 from reward_functions import (
-    DynamicRewardFunction
+    reward_function_diff
 )
 from evaluate_model import evaluate_model_vllm
 
@@ -89,15 +89,17 @@ def run_rl_for_level(
     learning_rate: float = 1e-7,
     max_steps: int = 500,
     use_system_prompt: bool = True,
+    use_dense_reward: bool = True,
+    phase: str = "",
 ):
-    """Run RL training for a specific level with dynamic reward (dense -> discrete)."""
+    """Run RL training for a specific level with specified reward type."""
+    reward_type = "DENSE" if use_dense_reward else "DISCRETE"
     print(f"\n{'='*60}")
-    print(f"Starting RL training for Level {level}")
+    print(f"Starting RL training for Level {level} {phase}")
     print(f"Training samples: {len(train_data)}")
     print(f"Max steps: {max_steps}")
     print(f"Learning rate: {learning_rate}")
-    print(f"Dense reward phase: steps 0-{max_steps // 4} (1/4)")
-    print(f"Discrete reward phase: steps {max_steps // 4 + 1}-{max_steps} (3/4)")
+    print(f"Reward type: {reward_type}")
     print(f"Using system prompt: {use_system_prompt}")
     print(f"{'='*60}")
     
@@ -132,8 +134,9 @@ def run_rl_for_level(
         include_stop_str_in_output=True,
     )
     
-    # Create dynamic reward function that switches from dense to discrete
-    dynamic_reward = DynamicRewardFunction(max_steps=max_steps)
+    # Create reward function with appropriate dense/discrete setting
+    from functools import partial
+    reward_func = partial(reward_function_diff, use_dense_reward=use_dense_reward)
     
     training_args = GRPOConfig(
         use_vllm=True,
@@ -164,16 +167,16 @@ def run_rl_for_level(
     trainer = GRPOTrainer(
         model=model,
         processing_class=tokenizer,
-        reward_funcs=[dynamic_reward],
+        reward_funcs=[reward_func],
         args=training_args,
         train_dataset=dataset,
     )
     
-    print(f"[RL Level {level}] Starting training...")
+    print(f"[RL Level {level} {phase}] Starting training...")
     trainer.train()
     
     final_path = os.path.join(output_dir, "final")
-    print(f"[RL Level {level}] Saving model to {final_path}...")
+    print(f"[RL Level {level} {phase}] Saving model to {final_path}...")
     trainer.save_model(final_path)
     try:
         tokenizer.save_pretrained(final_path)
@@ -195,7 +198,9 @@ def run_curriculum_training(
 ):
     """
     Run curriculum training: Direct RL training by level (1-6).
-    Uses dynamic reward: dense for first 1/4 of steps, discrete for remaining 3/4.
+    Each level has two training phases:
+      - Phase 1: Dense reward (125 steps) - gives partial credit
+      - Phase 2: Discrete reward (375 steps) - binary success/fail
     
     Args:
         train_data_path: Path to training data JSON
@@ -212,7 +217,9 @@ def run_curriculum_training(
     print(f"Train data: {train_data_path}")
     print(f"Eval data: {eval_data_path}")
     print(f"Output directory: {base_output_dir}")
-    print(f"Reward strategy: Dense (1/4) -> Discrete (3/4)")
+    print(f"Training strategy: 2 phases per level")
+    print(f"  - Phase 1: Dense reward (125 steps)")
+    print(f"  - Phase 2: Discrete reward (375 steps)")
     print(f"Use system prompt: {use_system_prompt}")
     print(f"{'='*80}\n")
     
@@ -241,15 +248,32 @@ def run_curriculum_training(
             random.seed(42 + level)
             level_data = random.sample(level_data, rl_samples_per_level)
         
-        # Run RL training
-        rl_output_dir = f"{base_output_dir}_rl_level{level}"
+        # Phase 1: Dense reward training (1/4 of steps)
+        dense_steps = 125  # 1/4 of 500
+        dense_output_dir = f"{base_output_dir}_rl_level{level}_dense"
         current_model_path = run_rl_for_level(
             level=level,
             train_data=level_data,
             model_path=current_model_path,
-            output_dir=rl_output_dir,
-            max_steps=500,
+            output_dir=dense_output_dir,
+            max_steps=dense_steps,
             use_system_prompt=use_system_prompt,
+            use_dense_reward=True,
+            phase="(Phase 1: Dense)",
+        )
+        
+        # Phase 2: Discrete reward training (3/4 of steps)
+        discrete_steps = 375  # 3/4 of 500
+        discrete_output_dir = f"{base_output_dir}_rl_level{level}_discrete"
+        current_model_path = run_rl_for_level(
+            level=level,
+            train_data=level_data,
+            model_path=current_model_path,
+            output_dir=discrete_output_dir,
+            max_steps=discrete_steps,
+            use_system_prompt=use_system_prompt,
+            use_dense_reward=False,
+            phase="(Phase 2: Discrete)",
         )
         
         # Evaluate after this level using vLLM
