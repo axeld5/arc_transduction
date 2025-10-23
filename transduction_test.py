@@ -1,9 +1,7 @@
 import json
 from typing import *
 import os
-import platform
 import random
-import torch
 from dotenv import load_dotenv
 from huggingface_hub import login
 from trl import GRPOConfig, GRPOTrainer
@@ -11,9 +9,6 @@ from unsloth import FastLanguageModel
 from datasets import Dataset
 from vllm import SamplingParams
 from reward_functions import (
-    parse_grid_from_string,
-    check_value,
-    same_shape,
     DynamicRewardFunction
 )
 from evaluate_model import evaluate_model_vllm
@@ -106,28 +101,26 @@ def run_rl_for_level(
     print(f"Using system prompt: {use_system_prompt}")
     print(f"{'='*60}")
     
-    max_seq_length = 8192
+    max_seq_length = 16000
     lora_rank = 128
     
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_path,
         max_seq_length=max_seq_length,
         load_in_4bit=False,
-        fast_inference=True,
         max_lora_rank=lora_rank,
-        gpu_memory_utilization=0.2,
     )
     
     model = FastLanguageModel.get_peft_model(
         model,
-        r=128,
+        r=8,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                        "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=32,
         lora_dropout=0,
         bias="none",
         use_gradient_checkpointing="unsloth",
     )
+    model.get_input_embeddings().requires_grad_(True)
     
     # Convert to RL format with optional system prompt
     converted = convert_to_rl_format(train_data, use_system_prompt=use_system_prompt)
@@ -144,6 +137,9 @@ def run_rl_for_level(
     
     training_args = GRPOConfig(
         use_vllm=True,
+        vllm_mode="server",
+        vllm_server_host="127.0.0.1",
+        vllm_server_port=8000,
         importance_sampling_level="sequence",
         loss_type="grpo",
         output_dir=output_dir,
@@ -157,10 +153,10 @@ def run_rl_for_level(
         logging_steps=10,
         save_steps=200,
         optim="paged_adamw_8bit",
-        report_to="none",
+        report_to="tensorboard",
         num_generations=4,
-        max_prompt_length=4096,
-        max_completion_length=2048,
+        max_prompt_length=8192,
+        max_completion_length=4096,
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
     )
@@ -289,7 +285,7 @@ if __name__ == "__main__":
         train_data_path="generated_data/train_data.json",
         eval_data_path="generated_data/eval_data.json",
         base_output_dir="qwen3_4b_curriculum",
-        base_model="Qwen/Qwen2.5-3B-Instruct",
+        base_model="Qwen/Qwen3-4B-Instruct-2507",
         rl_samples_per_level=5000,
         use_system_prompt=True,  # Set to False to disable system prompt
     )
