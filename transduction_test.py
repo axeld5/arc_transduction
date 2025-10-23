@@ -134,9 +134,13 @@ def run_rl_for_level(
         include_stop_str_in_output=True,
     )
     
-    # Create reward function with appropriate dense/discrete setting
-    from functools import partial
-    reward_func = partial(reward_function_diff, use_dense_reward=use_dense_reward)
+    # Create reward function wrapper with appropriate dense/discrete setting
+    def reward_func(completions, expected_output, **kwargs):
+        """Wrapper for reward_function_diff with fixed use_dense_reward parameter."""
+        return reward_function_diff(completions, expected_output, use_dense_reward=use_dense_reward, **kwargs)
+    
+    # Set the __name__ attribute so TRL can identify it
+    reward_func.__name__ = f"reward_function_{'dense' if use_dense_reward else 'discrete'}"
     
     training_args = GRPOConfig(
         use_vllm=True,
