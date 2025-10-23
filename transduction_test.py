@@ -13,8 +13,10 @@ from vllm import SamplingParams
 from reward_functions import (
     parse_grid_from_string,
     check_value,
+    same_shape,
     DynamicRewardFunction
 )
+from evaluate_model import evaluate_model_vllm
 
 load_dotenv()
 if os.getenv("HF_TOKEN"):
@@ -24,6 +26,16 @@ if os.getenv("HF_TOKEN"):
         pass
 
 # ========== DATA LOADING ==========
+
+def load_optimized_prompt(prompt_path: str = "optimized_prompt.txt") -> str:
+    """Load the optimized system prompt from file."""
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print(f"Warning: {prompt_path} not found, proceeding without system prompt")
+        return ""
+
 
 def load_data_by_level(data_path: str, level: int) -> List[Dict[str, Any]]:
     """Load training data filtered by level."""
@@ -36,78 +48,40 @@ def load_data_by_level(data_path: str, level: int) -> List[Dict[str, Any]]:
     return filtered_data
 
 
-def convert_to_rl_format(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Convert training data to RL format with prompt and expected_output."""
+def convert_to_rl_format(
+    data: List[Dict[str, Any]],
+    use_system_prompt: bool = True,
+    system_prompt: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Convert training data to RL format with prompt and expected_output.
+    
+    Args:
+        data: List of training examples
+        use_system_prompt: Whether to prepend the system prompt to each problem
+        system_prompt: The system prompt to use (loaded from file if None)
+        
+    Returns:
+        List of formatted examples for RL training
+    """
+    if use_system_prompt and system_prompt is None:
+        system_prompt = load_optimized_prompt()
+    
     result = []
     for ex in data:
+        if use_system_prompt and system_prompt:
+            # Prepend system prompt to the problem
+            content = f"{system_prompt}\n\n{ex['problem']}"
+        else:
+            content = ex['problem']
+        
         result.append({
             "prompt": [
-                {"role": "user", "content": ex['problem']}
+                {"role": "user", "content": content}
             ],
             "expected_output": ex['answer']
         })
     return result
-
-
-# ========== EVALUATION ==========
-
-def evaluate_model(model, tokenizer, eval_data_path: str, max_samples: int = 100) -> Dict[str, float]:
-    """Evaluate model on eval data."""
-    print(f"\nEvaluating model on {eval_data_path}...")
-    
-    with open(eval_data_path, 'r') as f:
-        eval_data = json.load(f)
-    
-    # Sample some examples from different levels
-    level_samples = {}
-    for level in range(1, 7):
-        level_data = [ex for ex in eval_data if ex['metadata']['level'] == level]
-        if level_data:
-            import random
-            level_samples[level] = random.sample(level_data, min(max_samples // 6, len(level_data)))
-    
-    results = {f"level_{level}": {"correct": 0, "total": 0} for level in range(1, 7)}
-    results["overall"] = {"correct": 0, "total": 0}
-    
-    FastLanguageModel.for_inference(model)
-    
-    for level, samples in level_samples.items():
-        for sample in samples:
-            messages = [{"role": "user", "content": sample['problem']}]
-            inputs = tokenizer.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=True,
-                return_tensors="pt",
-            ).to("cuda")
-            
-            outputs = model.generate(input_ids=inputs, max_new_tokens=4096, use_cache=True)
-            generated_tokens = outputs[:, inputs.shape[-1]:]
-            decoded = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)[0]
-            
-            expected_grid = parse_grid_from_string(sample['answer'])
-            is_correct = check_value(decoded, expected_grid)
-            
-            results[f"level_{level}"]["total"] += 1
-            results["overall"]["total"] += 1
-            if is_correct:
-                results[f"level_{level}"]["correct"] += 1
-                results["overall"]["correct"] += 1
-    
-    # Calculate accuracies
-    for key in results:
-        total = results[key]["total"]
-        correct = results[key]["correct"]
-        results[key]["accuracy"] = correct / total if total > 0 else 0.0
-    
-    print("\nEvaluation Results:")
-    print(f"Overall: {results['overall']['correct']}/{results['overall']['total']} = {results['overall']['accuracy']:.2%}")
-    for level in range(1, 7):
-        level_key = f"level_{level}"
-        if results[level_key]["total"] > 0:
-            print(f"  Level {level}: {results[level_key]['correct']}/{results[level_key]['total']} = {results[level_key]['accuracy']:.2%}")
-    
-    return results
 
 
 # ========== TRAINING FUNCTIONS ==========
@@ -119,6 +93,7 @@ def run_rl_for_level(
     output_dir: str,
     learning_rate: float = 1e-5,
     max_steps: int = 500,
+    use_system_prompt: bool = True,
 ):
     """Run RL training for a specific level with dynamic reward (dense -> discrete)."""
     print(f"\n{'='*60}")
@@ -127,6 +102,7 @@ def run_rl_for_level(
     print(f"Max steps: {max_steps}")
     print(f"Dense reward phase: steps 0-{max_steps // 4} (1/4)")
     print(f"Discrete reward phase: steps {max_steps // 4 + 1}-{max_steps} (3/4)")
+    print(f"Using system prompt: {use_system_prompt}")
     print(f"{'='*60}")
     
     max_seq_length = 8192
@@ -152,8 +128,8 @@ def run_rl_for_level(
         use_gradient_checkpointing="unsloth",
     )
     
-    # Convert to RL format
-    converted = convert_to_rl_format(train_data)
+    # Convert to RL format with optional system prompt
+    converted = convert_to_rl_format(train_data, use_system_prompt=use_system_prompt)
     dataset = Dataset.from_list(converted)
     print(f"Dataset size: {len(dataset)}")
     
@@ -218,10 +194,19 @@ def run_curriculum_training(
     base_output_dir: str = "qwen3_4b_curriculum",
     base_model: str = "unsloth/Qwen2.5-3B-Instruct",
     rl_samples_per_level: int = 5000,
+    use_system_prompt: bool = True,
 ):
     """
     Run curriculum training: Direct RL training by level (1-6).
     Uses dynamic reward: dense for first 1/4 of steps, discrete for remaining 3/4.
+    
+    Args:
+        train_data_path: Path to training data JSON
+        eval_data_path: Path to evaluation data JSON
+        base_output_dir: Base directory for saving models
+        base_model: Base model to start from
+        rl_samples_per_level: Max samples to use per level
+        use_system_prompt: Whether to prepend optimized prompt to each sample
     """
     print(f"\n{'='*80}")
     print("CURRICULUM RL TRAINING PIPELINE")
@@ -231,6 +216,7 @@ def run_curriculum_training(
     print(f"Eval data: {eval_data_path}")
     print(f"Output directory: {base_output_dir}")
     print(f"Reward strategy: Dense (1/4) -> Discrete (3/4)")
+    print(f"Use system prompt: {use_system_prompt}")
     print(f"{'='*80}\n")
     
     # Load all training data
@@ -266,27 +252,18 @@ def run_curriculum_training(
             model_path=current_model_path,
             output_dir=rl_output_dir,
             max_steps=500,
+            use_system_prompt=use_system_prompt,
         )
         
-        # Evaluate after this level
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=current_model_path,
-            max_seq_length=8192,
-            dtype=torch.bfloat16,
-            load_in_4bit=True,
+        # Evaluate after this level using vLLM
+        level_results = evaluate_model_vllm(
+            model_path=current_model_path,
+            eval_data_path=eval_data_path,
+            max_samples_per_level=20,
+            attempts_per_problem=1,
+            temperature=0.0,
+            use_system_prompt=use_system_prompt,
         )
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=128,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                           "gate_proj", "up_proj", "down_proj"],
-            lora_alpha=32,
-            lora_dropout=0,
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-        )
-        
-        level_results = evaluate_model(model, tokenizer, eval_data_path)
         all_results[f"rl_level_{level}"] = level_results
         
         # Save cumulative results
@@ -313,6 +290,7 @@ if __name__ == "__main__":
         base_output_dir="qwen3_4b_curriculum",
         base_model="unsloth/Qwen2.5-3B-Instruct",
         rl_samples_per_level=5000,
+        use_system_prompt=True,  # Set to False to disable system prompt
     )
     
     print("\n" + "="*80)
