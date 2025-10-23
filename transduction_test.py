@@ -189,7 +189,7 @@ def run_curriculum_training(
     train_data_path: str = "generated_data/train_data.json",
     eval_data_path: str = "generated_data/eval_data.json",
     base_output_dir: str = "qwen3_4b_curriculum",
-    base_model: str = "Qwen/Qwen2.5-3B-Instruct",
+    base_model: str = "Qwen/Qwen3-4B-Instruct-2507",
     rl_samples_per_level: int = 5000,
     use_system_prompt: bool = True,
 ):
