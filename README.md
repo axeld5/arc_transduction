@@ -28,4 +28,5 @@ export CUDA_VISIBLE_DEVICES=0,1 && sudo --preserve-env=CUDA_VISIBLE_DEVICES uv r
 7.0.0.1 --port 8000 --tensor-parallel-size 1 --max-model-len 32768
 export CUDA_VISIBLE_DEVICES=0,1 && sudo --preserve-env=CUDA_VISIBLE_DEVICES uv run trl vllm-serve --model qwen2.5_7b_induction_rl_partial/merged --host 127.0.0.1 --port 8000 --tensor-parallel-size 1 --max-model-len 32768
 
-export CUDA_VISIBLE_DEVICES=0,1 && sudo --preserve-env=CUDA_VISIBLE_DEVICES uv run trl vllm-serve --model qwen2.5_7b_singled_out_sft/merged --host 127.0.0.1 --port 8000 --tensor-parallel-size 1 --max-model-len 32768
+export CUDA_VISIBLE_DEVICES=0 && sudo --preserve-env=CUDA_VISIBLE_DEVICES uv run trl vllm-serve --model Qwen/Qwen3-4B-Instruct-2507 --host 127.0.0.1 --port 8000 --tensor-parallel-size 1 --max-model-len 32768
+export CUDA_VISIBLE_DEVICES=1 && sudo --preserve-env=CUDA_VISIBLE_DEVICES uv run accelerate launch  --num_processes=1 --mixed_precision=bf16 transduction_test.py
