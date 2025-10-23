@@ -91,7 +91,7 @@ def run_rl_for_level(
     train_data: List[Dict[str, Any]],
     model_path: str,
     output_dir: str,
-    learning_rate: float = 1e-5,
+    learning_rate: float = 1e-7,
     max_steps: int = 500,
     use_system_prompt: bool = True,
 ):
@@ -100,6 +100,7 @@ def run_rl_for_level(
     print(f"Starting RL training for Level {level}")
     print(f"Training samples: {len(train_data)}")
     print(f"Max steps: {max_steps}")
+    print(f"Learning rate: {learning_rate}")
     print(f"Dense reward phase: steps 0-{max_steps // 4} (1/4)")
     print(f"Discrete reward phase: steps {max_steps // 4 + 1}-{max_steps} (3/4)")
     print(f"Using system prompt: {use_system_prompt}")
@@ -192,7 +193,7 @@ def run_curriculum_training(
     train_data_path: str = "generated_data/train_data.json",
     eval_data_path: str = "generated_data/eval_data.json",
     base_output_dir: str = "qwen3_4b_curriculum",
-    base_model: str = "unsloth/Qwen2.5-3B-Instruct",
+    base_model: str = "Qwen/Qwen2.5-3B-Instruct",
     rl_samples_per_level: int = 5000,
     use_system_prompt: bool = True,
 ):
@@ -261,7 +262,7 @@ def run_curriculum_training(
             eval_data_path=eval_data_path,
             max_samples_per_level=20,
             attempts_per_problem=1,
-            temperature=0.0,
+            temperature=0.7,
             use_system_prompt=use_system_prompt,
         )
         all_results[f"rl_level_{level}"] = level_results
@@ -288,7 +289,7 @@ if __name__ == "__main__":
         train_data_path="generated_data/train_data.json",
         eval_data_path="generated_data/eval_data.json",
         base_output_dir="qwen3_4b_curriculum",
-        base_model="unsloth/Qwen2.5-3B-Instruct",
+        base_model="Qwen/Qwen2.5-3B-Instruct",
         rl_samples_per_level=5000,
         use_system_prompt=True,  # Set to False to disable system prompt
     )

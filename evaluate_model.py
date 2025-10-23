@@ -25,7 +25,7 @@ def evaluate_model_vllm(
     eval_data_path: str,
     max_samples_per_level: int = 20,
     attempts_per_problem: int = 1,
-    temperature: float = 0.0,
+    temperature: float = 0.7,
     use_system_prompt: bool = True,
 ) -> Dict[str, Any]:
     """
@@ -37,7 +37,7 @@ def evaluate_model_vllm(
         eval_data_path: Path to evaluation data JSON file
         max_samples_per_level: Maximum samples to test per level (1-6)
         attempts_per_problem: Number of generation attempts per problem
-        temperature: Sampling temperature (0.0 = greedy)
+        temperature: Sampling temperature (default: 0.7)
         use_system_prompt: Whether to prepend optimized prompt to each problem
         
     Returns:
@@ -67,7 +67,9 @@ def evaluate_model_vllm(
     sampling_params = SamplingParams(
         max_tokens=4096,
         temperature=temperature,
-        top_p=0.95 if temperature > 0 else 1.0,
+        top_p=0.8,
+        top_k=20,
+        min_p=0.0,
     )
     
     # Load eval data
@@ -199,8 +201,8 @@ if __name__ == "__main__":
                         help="Max samples per level (default: 20)")
     parser.add_argument("--attempts", type=int, default=1,
                         help="Attempts per problem (default: 1)")
-    parser.add_argument("--temperature", type=float, default=0.0,
-                        help="Sampling temperature (default: 0.0)")
+    parser.add_argument("--temperature", type=float, default=0.7,
+                        help="Sampling temperature (default: 0.7)")
     parser.add_argument("--no-system-prompt", action="store_true",
                         help="Disable system prompt")
     
