@@ -2,6 +2,8 @@ import json
 from typing import *
 import os
 import random
+import gc
+import torch
 from dotenv import load_dotenv
 from huggingface_hub import login
 from trl import GRPOConfig, GRPOTrainer
@@ -186,6 +188,28 @@ def run_rl_for_level(
         tokenizer.save_pretrained(final_path)
     except Exception:
         pass
+    
+    # Clean up trainer and vLLM communicator to free resources
+    print(f"[RL Level {level} {phase}] Cleaning up trainer and vLLM resources...")
+    try:
+        # Close vLLM communicator if using vLLM
+        if hasattr(trainer, 'vllm_client') and trainer.vllm_client is not None:
+            trainer.vllm_client.close_communicator()
+            print("  - Closed vLLM communicator")
+    except Exception as e:
+        print(f"  - Warning: Could not close vLLM communicator: {e}")
+    
+    # Delete trainer to free memory
+    del trainer
+    del model
+    del tokenizer
+    
+    # Clear CUDA cache
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    print(f"[RL Level {level} {phase}] Cleanup complete")
     
     return final_path
 
