@@ -113,7 +113,7 @@ def run_rl_for_level(
         max_seq_length=max_seq_length,
         load_in_4bit=False,
         max_lora_rank=lora_rank,
-        fast_inference = True, # Enable vLLM fast inference
+        fast_inference = False, # Enable vLLM fast inference
     )
     
     model = FastLanguageModel.get_peft_model(
@@ -147,7 +147,9 @@ def run_rl_for_level(
     
     training_args = GRPOConfig(
         use_vllm=True,
-        vllm_mode="local",
+        vllm_mode="server",
+        vllm_server_host="127.0.0.1",
+        vllm_server_port=8000,
         importance_sampling_level="sequence",
         loss_type="grpo",
         output_dir=output_dir,
