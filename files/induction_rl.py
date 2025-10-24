@@ -257,15 +257,31 @@ def run_rl(
     trainer.train()
     model_save_path = os.path.join(output_dir, "final")
     merged_save_path = os.path.join(output_dir, "merged")
+    
+    # Save LoRA adapter
+    print(f"Saving LoRA adapter to {model_save_path}...")
     model.save_pretrained(model_save_path)
+    tokenizer.save_pretrained(model_save_path)
+    
+    # Save merged 16bit model (required for transduction scripts)
+    print(f"Saving merged 16bit model to {merged_save_path}...")
     try:
-        tokenizer.save_pretrained(model_save_path)
-        model.save_pretrained_merged(merged_save_path, tokenizer, save_method = "merged_16bit",)
-        if os.getenv("HF_TOKEN") and not is_partial:
+        model.save_pretrained_merged(merged_save_path, tokenizer, save_method = "merged_16bit")
+        print(f"Successfully saved merged 16bit model to {merged_save_path}")
+    except Exception as e:
+        print(f"ERROR: Failed to save merged model: {e}")
+        raise
+    
+    # Optionally push to hub
+    if os.getenv("HF_TOKEN") and not is_partial:
+        try:
+            print("Pushing merged model to Hugging Face Hub...")
             model.push_to_hub_merged("axel-darmouni/qwen2.5-7b-soar-induction-rl", tokenizer, save_method = "merged_16bit", token = os.getenv("HF_TOKEN"))
-    except Exception:
-        pass
-    return model_save_path
+            print("Successfully pushed to Hub")
+        except Exception as e:
+            print(f"Warning: Failed to push to Hub: {e}")
+    
+    return merged_save_path
 
 
 if __name__ == "__main__":    

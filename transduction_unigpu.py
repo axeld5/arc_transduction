@@ -179,12 +179,21 @@ def run_rl_for_level(
     trainer.train()
     
     final_path = os.path.join(output_dir, "final")
-    print(f"[RL Level {level} {phase}] Saving model to {final_path}...")
+    merged_path = os.path.join(output_dir, "merged")
+    
+    # Save LoRA adapter
+    print(f"[RL Level {level} {phase}] Saving LoRA adapter to {final_path}...")
     trainer.save_model(final_path)
+    tokenizer.save_pretrained(final_path)
+    
+    # Save merged 16bit model (required for next training stage)
+    print(f"[RL Level {level} {phase}] Saving merged 16bit model to {merged_path}...")
     try:
-        tokenizer.save_pretrained(final_path)
-    except Exception:
-        pass
+        model.save_pretrained_merged(merged_path, tokenizer, save_method="merged_16bit")
+        print(f"[RL Level {level} {phase}] Successfully saved merged 16bit model")
+    except Exception as e:
+        print(f"[RL Level {level} {phase}] ERROR: Failed to save merged model: {e}")
+        raise
     
     # Clean up trainer and vLLM communicator to free resources
     print(f"[RL Level {level} {phase}] Cleaning up trainer and vLLM resources...")
@@ -208,7 +217,7 @@ def run_rl_for_level(
         torch.cuda.synchronize()
     print(f"[RL Level {level} {phase}] Cleanup complete")
     
-    return final_path
+    return merged_path
 
 
 # ========== MAIN CURRICULUM TRAINING ==========
