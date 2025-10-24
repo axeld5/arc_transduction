@@ -147,6 +147,7 @@ def run_rl_for_level(
     
     training_args = GRPOConfig(
         use_vllm=True,
+        vllm_mode="local",
         importance_sampling_level="sequence",
         loss_type="grpo",
         output_dir=output_dir,
