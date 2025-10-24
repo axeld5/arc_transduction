@@ -146,10 +146,7 @@ def run_rl_for_level(
     reward_func.__name__ = f"reward_function_{'dense' if use_dense_reward else 'discrete'}"
     
     training_args = GRPOConfig(
-        use_vllm=True,
-        vllm_mode="server",
-        vllm_server_host="127.0.0.1",
-        vllm_server_port=8000,
+        use_vllm=False,
         importance_sampling_level="sequence",
         loss_type="grpo",
         output_dir=output_dir,
