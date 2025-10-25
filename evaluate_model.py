@@ -87,7 +87,7 @@ def evaluate_model_vllm(
             max_model_len=16000,
             enable_lora=True,
             max_loras=1,
-            max_lora_rank=128,
+            max_lora_rank=256,
         )
         # Create LoRARequest for generation
         lora_request = LoRARequest("eval-lora", 1, lora_path)
