@@ -145,7 +145,7 @@ def config_data_for_sft(conversations: List[List[Dict[str, str]]], tokenizer):
 def run_sft(
     train_data_path: str = "generated_data/train_data.json",
     eval_data_path: str = "generated_data/eval_data.json",
-    output_dir: str = "qwen3_4b_transduction_sft",
+    output_dir: str = "qwen2.5_3b_transduction_sft",
     base_model: str = "Qwen/Qwen2.5-3B-Instruct",
     learning_rate: float = 5e-5,
     num_train_epochs: int = 3,
@@ -334,7 +334,7 @@ if __name__ == "__main__":
     sft_model_save_path, sft_merged_save_path, eval_results = run_sft(
         train_data_path="generated_data/train_data.json",
         eval_data_path="generated_data/eval_data.json",
-        output_dir="qwen3_4b_transduction_sft",
+        output_dir="qwen2.5_3b_transduction_sft",
         base_model="Qwen/Qwen2.5-3B-Instruct",
         learning_rate=5e-5,
         num_train_epochs=3,
