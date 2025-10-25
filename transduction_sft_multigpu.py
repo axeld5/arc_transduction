@@ -147,7 +147,7 @@ def run_sft(
     eval_data_path: str = "generated_data/eval_data.json",
     output_dir: str = "qwen3_4b_transduction_sft",
     base_model: str = "Qwen/Qwen3-4B-Instruct-2507",
-    learning_rate: float = 5e-5,
+    learning_rate: float = 5e-7,
     num_train_epochs: int = 3,
     per_device_batch_size: int = 4,
     gradient_accumulation_steps: int = 8,

@@ -27,6 +27,9 @@ def evaluate_model_vllm(
     attempts_per_problem: int = 1,
     temperature: float = 0.7,
     use_system_prompt: bool = True,
+    use_lora: bool = False,
+    lora_path: Optional[str] = None,
+    print_examples: bool = False,
 ) -> Dict[str, Any]:
     """
     Evaluate model using vLLM for efficient batch generation.
@@ -39,19 +42,31 @@ def evaluate_model_vllm(
         attempts_per_problem: Number of generation attempts per problem
         temperature: Sampling temperature (default: 0.7)
         use_system_prompt: Whether to prepend optimized prompt to each problem
+        use_lora: Whether to use LoRA adapter (default: False)
+        lora_path: Path to LoRA adapter directory (required if use_lora=True)
+        print_examples: Whether to print first example of first 10 problems (default: False)
         
     Returns:
         Dictionary with results per level and overall accuracy
     """
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
+    from vllm.lora.request import LoRARequest
     from reward_functions import parse_grid_from_string, check_value
     
     print(f"\n{'='*60}")
     print(f"Evaluating model: {model_path}")
     print(f"Eval data: {eval_data_path}")
     print(f"Using system prompt: {use_system_prompt}")
+    print(f"Using LoRA: {use_lora}")
+    if use_lora:
+        print(f"LoRA path: {lora_path}")
+    print(f"Print examples: {print_examples}")
     print(f"{'='*60}")
+    
+    # Validate LoRA settings
+    if use_lora and not lora_path:
+        raise ValueError("lora_path must be provided when use_lora=True")
     
     # Load system prompt if requested
     system_prompt = ""
@@ -62,7 +77,28 @@ def evaluate_model_vllm(
     
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    llm = LLM(model=model_path, trust_remote_code=True, gpu_memory_utilization=0.5, max_model_len=16000)
+    
+    # Initialize LLM with LoRA support if requested
+    if use_lora:
+        llm = LLM(
+            model=model_path,
+            trust_remote_code=True,
+            gpu_memory_utilization=0.5,
+            max_model_len=16000,
+            enable_lora=True,
+            max_loras=1,
+            max_lora_rank=128,
+        )
+        # Create LoRARequest for generation
+        lora_request = LoRARequest("eval-lora", 1, lora_path)
+    else:
+        llm = LLM(
+            model=model_path,
+            trust_remote_code=True,
+            gpu_memory_utilization=0.5,
+            max_model_len=16000
+        )
+        lora_request = None
     
     sampling_params = SamplingParams(
         max_tokens=4096,
@@ -116,10 +152,38 @@ def evaluate_model_vllm(
     print(f"\nGenerating {len(all_prompts)} outputs in batch...")
     print(f"  {sum(len(s) for s in level_samples.values())} problems × {attempts_per_problem} attempts")
     
-    # Generate ALL outputs in ONE batch
-    outputs = llm.generate(all_prompts, sampling_params=sampling_params)
+    # Generate ALL outputs in ONE batch (with LoRA if enabled)
+    if use_lora:
+        outputs = llm.generate(all_prompts, sampling_params=sampling_params, lora_request=lora_request)
+    else:
+        outputs = llm.generate(all_prompts, sampling_params=sampling_params)
     
     print("Batch generation complete! Evaluating results...\n")
+    
+    # Print examples if requested (first 10 problems)
+    if print_examples:
+        print(f"\n{'='*60}")
+        print("EXAMPLE OUTPUTS (First 10 Problems)")
+        print(f"{'='*60}\n")
+        examples_printed = 0
+        for i, (output, metadata) in enumerate(zip(outputs, prompt_metadata)):
+            # Only print first attempt of each problem
+            if metadata['attempt'] == 0 and examples_printed < 10:
+                level = metadata['level']
+                sample_idx = metadata['sample_idx']
+                sample = metadata['sample']
+                generated_text = output.outputs[0].text
+                
+                print(f"Problem {examples_printed + 1} (Level {level}, Sample {sample_idx}):")
+                print(f"Input:\n{sample['problem'][:200]}..." if len(sample['problem']) > 200 else f"Input:\n{sample['problem']}")
+                print(f"\nGenerated Output:\n{generated_text}\n")
+                print(f"Expected:\n{sample['answer']}\n")
+                print("-" * 60)
+                examples_printed += 1
+                
+                if examples_printed >= 10:
+                    break
+        print(f"{'='*60}\n")
     
     # Initialize results tracking
     results = {f"level_{level}": {"correct": 0, "total": 0} for level in range(1, 7)}
@@ -205,6 +269,12 @@ if __name__ == "__main__":
                         help="Sampling temperature (default: 0.7)")
     parser.add_argument("--no-system-prompt", action="store_true",
                         help="Disable system prompt")
+    parser.add_argument("--use-lora", action="store_true",
+                        help="Enable LoRA adapter")
+    parser.add_argument("--lora-path", type=str, default=None,
+                        help="Path to LoRA adapter directory (required if --use-lora)")
+    parser.add_argument("--print-examples", action="store_true",
+                        help="Print first example of first 10 problems")
     
     args = parser.parse_args()
     
@@ -215,6 +285,9 @@ if __name__ == "__main__":
         attempts_per_problem=args.attempts,
         temperature=args.temperature,
         use_system_prompt=not args.no_system_prompt,
+        use_lora=args.use_lora,
+        lora_path=args.lora_path,
+        print_examples=args.print_examples,
     )
     
     # Save results
