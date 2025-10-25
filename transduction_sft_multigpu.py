@@ -295,15 +295,18 @@ def run_sft(
     # Run evaluation if requested and on main process
     eval_results = None
     if eval_after_training and local_rank == 0:
-        print("\n[SFT] Starting evaluation...")
+        print("\n[SFT] Starting evaluation with LoRA adapter...")
         try:
             eval_results = evaluate_model_vllm(
-                model_path=merged_save_path,
+                model_path=base_model,
                 eval_data_path=eval_data_path,
                 max_samples_per_level=eval_samples_per_level,
                 attempts_per_problem=1,
                 temperature=eval_temperature,
                 use_system_prompt=use_system_prompt,
+                use_lora=True,
+                lora_path=model_save_path,
+                print_examples=True,
             )
             
             # Save evaluation results
