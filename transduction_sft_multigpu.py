@@ -337,7 +337,7 @@ if __name__ == "__main__":
         output_dir="qwen2.5_3b_transduction_sft",
         base_model="Qwen/Qwen2.5-3B-Instruct",
         learning_rate=5e-5,
-        num_train_epochs=3,
+        num_train_epochs=1,
         per_device_batch_size=4,
         gradient_accumulation_steps=8,
         use_system_prompt=True,
