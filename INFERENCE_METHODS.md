@@ -1,6 +1,6 @@
 # Inference Methods for Model Evaluation
 
-This document describes the three inference methods available in `evaluate_model.py` for evaluating ARC transduction models.
+This document describes the four inference methods available in `evaluate_model.py` for evaluating ARC transduction models.
 
 ## Usage
 
@@ -110,6 +110,63 @@ python evaluate_model.py model_path --inference-mode augmented_voting --num-augm
 - Gracefully handles reversal failures (skips in vote counter)
 - Preserves original problem introduction text
 
+## 4. Augmented Deep Dive Method (Hybrid)
+
+Combines augmentation breadth with iterative depth: applies augmentations to all problems, runs deep dive on each augmented version, reverses augmentations, and votes. **The most powerful but computationally expensive method.**
+
+**Usage:**
+```bash
+python evaluate_model.py model_path --inference-mode augmented_deep_dive --num-augmentations 30 --deep-dive-iterations 16
+```
+
+**How it works (Tree Search Analogy):**
+1. Parse ALL problem structures
+2. Generate N augmentation configs (breadth - exploring different views)
+3. Apply augmentations to create N × Problems augmented versions
+4. **Run batched deep dive on ALL augmented problems** (depth - iterative refinement)
+5. Reverse augmentations on final outputs (skip failures)
+6. Take majority vote per original problem
+
+**Visual Analogy:**
+```
+Original Problem
+    ├─ Augmentation 1 → Deep Dive (iter 1 → 2 → ... → 16) → Reverse → Vote
+    ├─ Augmentation 2 → Deep Dive (iter 1 → 2 → ... → 16) → Reverse → Vote
+    ├─ Augmentation 3 → Deep Dive (iter 1 → 2 → ... → 16) → Reverse → Vote
+    └─ ... (30 total)
+        → Majority Vote → Final Answer
+```
+
+**Features:**
+- **Breadth + Depth**: Explores multiple perspectives AND refines each
+- Ultra-efficient batching at each iteration level
+- Best of both worlds: robustness AND refinement
+- Graceful failure handling for reversals
+- Batches ALL augmented problems together at each iteration
+
+**Parameters:**
+- `--num-augmentations N`: Number of augmentations (default: 30)
+- `--deep-dive-iterations N`: Max iterations per augmented problem (default: 16)
+
+**Best for:**
+- Maximum accuracy when computational cost is acceptable
+- Problems that benefit from both multiple perspectives AND refinement
+- Final evaluation where you want the most robust results
+- Competition or benchmark submissions
+
+**Performance:**
+- **Computation**: Most expensive (Problems × Augmentations × Iterations)
+- **vLLM Passes**: Up to N iterations (all augmented problems batched at each iteration)
+- **Example**: 100 problems × 30 augs × 5 avg iterations = 5 batched calls (3,000 prompts/call)
+- **Batching**: Fully batched - all augmented problems together at each iteration
+
+**Implementation Details:**
+- Reuses deep_dive_inference_batched for efficiency
+- All augmented problems go through deep dive together
+- Reversal happens only on final outputs (not intermediate iterations)
+- Voting happens after all augmented versions complete
+- Combines best practices from both parent methods
+
 ## Performance Considerations
 
 ### Standard
@@ -131,6 +188,13 @@ python evaluate_model.py model_path --inference-mode augmented_voting --num-augm
 - **Batching**: ALL problems × ALL augmentations in a single giant batch
 - **Example**: 100 problems × 30 augmentations = 1 batched call with 3,000 prompts
 - **Best When**: Seeking robust predictions through augmentation
+
+### Augmented Deep Dive (Hybrid)
+- **Speed**: Slowest (most comprehensive but computationally intensive)
+- **vLLM Passes**: Up to N iterations (all augmented problems batched at each iteration)
+- **Batching**: ALL problems × ALL augmentations batched together at each iteration
+- **Example**: 100 problems × 30 augs × 5 avg iters = 5 batched calls (3,000 prompts each)
+- **Best When**: Maximum accuracy needed, computational cost acceptable
 
 ## Examples
 
