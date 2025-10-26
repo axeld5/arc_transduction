@@ -4,9 +4,10 @@ Validates outputs using reward functions.
 
 Supports three inference modes:
 1. Standard: Direct batch generation (default)
-2. Deep Dive: Iterative refinement (up to N iterations, feeding output back as input)
+2. Deep Dive: Batched iterative refinement (all problems batched at each iteration)
 3. Augmented Voting: Apply augmentations, infer, reverse, and vote (efficient batching)
 
+All methods leverage vLLM's batching capabilities for maximum efficiency.
 See INFERENCE_METHODS.md for detailed documentation.
 """
 
@@ -85,81 +86,100 @@ def grid_to_string(grid: List[List[int]]) -> str:
     return '\n'.join([' '.join(map(str, row)) for row in grid])
 
 
-def deep_dive_inference(
+def deep_dive_inference_batched(
     llm,
     tokenizer,
-    sample: Dict[str, Any],
+    samples: List[Dict[str, Any]],
     system_prompt: str,
     sampling_params,
     lora_request=None,
     max_iterations: int = 16,
-) -> str:
+) -> List[str]:
     """
-    Iterative deep dive inference: feed model output back as input with placeholder.
+    Batched iterative deep dive inference: feed model outputs back as inputs with placeholders.
+    Processes all samples together at each iteration for efficiency.
     
     Args:
         llm: vLLM model instance
         tokenizer: Tokenizer instance
-        sample: Problem sample with 'problem' field
+        samples: List of problem samples with 'problem' field
         system_prompt: System prompt to prepend
         sampling_params: Sampling parameters for generation
         lora_request: LoRA request if using LoRA
         max_iterations: Maximum number of iterations (default: 16)
     
     Returns:
-        Final generated answer
+        List of final generated answers (one per sample)
     """
     from reward_functions import parse_grid_from_string
     
-    # Start with original problem
-    current_problem = sample['problem']
-    last_generated_text = None
+    # Track state for each sample
+    num_samples = len(samples)
+    current_problems = [sample['problem'] for sample in samples]
+    final_outputs = [None] * num_samples
+    active_indices = list(range(num_samples))  # Samples still being processed
     
     for iteration in range(max_iterations):
-        # Prepend system prompt
-        if system_prompt:
-            content = f"{system_prompt}\n\n{current_problem}"
-        else:
-            content = current_problem
+        if not active_indices:
+            break  # All samples have finished
         
-        messages = [{"role": "user", "content": content}]
-        formatted_prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
+        # Prepare prompts for active samples
+        prompts = []
+        for idx in active_indices:
+            problem = current_problems[idx]
+            if system_prompt:
+                content = f"{system_prompt}\n\n{problem}"
+            else:
+                content = problem
+            
+            messages = [{"role": "user", "content": content}]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            prompts.append(formatted_prompt)
         
-        # Generate
+        # Batch generate for all active samples
         if lora_request:
-            outputs = llm.generate([formatted_prompt], sampling_params=sampling_params, lora_request=lora_request)
+            outputs = llm.generate(prompts, sampling_params=sampling_params, lora_request=lora_request)
         else:
-            outputs = llm.generate([formatted_prompt], sampling_params=sampling_params)
+            outputs = llm.generate(prompts, sampling_params=sampling_params)
         
-        generated_text = outputs[0].outputs[0].text
-        last_generated_text = generated_text
+        # Process outputs and prepare next iteration
+        next_active_indices = []
+        for i, idx in enumerate(active_indices):
+            generated_text = outputs[i].outputs[0].text
+            
+            # Try to parse the generated grid
+            generated_grid = parse_grid_from_string(generated_text)
+            
+            # If this is the last iteration or parsing failed, finalize this sample
+            if iteration == max_iterations - 1 or generated_grid is None:
+                final_outputs[idx] = generated_text
+                continue
+            
+            # Update problem with new output for next iteration
+            if "Test Input:" in current_problems[idx]:
+                before_test = current_problems[idx].split("Test Input:")[0]
+                test_section = "Test Input:" + current_problems[idx].split("Test Input:")[1].split("Output:")[0]
+                current_problems[idx] = before_test + test_section + f"Output:\n{grid_to_string(generated_grid)}"
+            else:
+                # Fallback: just append to the problem
+                current_problems[idx] = current_problems[idx].rsplit('Output:', 1)[0] + f"Output:\n{grid_to_string(generated_grid)}"
+            
+            # Keep this sample active for next iteration
+            next_active_indices.append(idx)
         
-        # Try to parse the generated grid
-        generated_grid = parse_grid_from_string(generated_text)
-        
-        if generated_grid is None:
-            # Failed to parse, return what we have
-            return generated_text
-        
-        # If this is the last iteration, return the result
-        if iteration == max_iterations - 1:
-            return generated_text
-        
-        # Otherwise, create a new problem with the answer as a placeholder
-        # Split on "Test Input:" to preserve examples, then replace only the test output
-        if "Test Input:" in current_problem:
-            before_test = current_problem.split("Test Input:")[0]
-            test_section = "Test Input:" + current_problem.split("Test Input:")[1].split("Output:")[0]
-            current_problem = before_test + test_section + f"Output:\n{grid_to_string(generated_grid)}"
-        else:
-            # Fallback: just append to the problem
-            current_problem = current_problem.rsplit('Output:', 1)[0] + f"Output:\n{grid_to_string(generated_grid)}"
+        active_indices = next_active_indices
+        print(f"    Iteration {iteration + 1}/{max_iterations}: {len(active_indices)} samples still refining")
     
-    return last_generated_text if last_generated_text else ""
+    # Fill in any remaining samples (shouldn't happen, but just in case)
+    for idx in range(num_samples):
+        if final_outputs[idx] is None:
+            final_outputs[idx] = ""
+    
+    return final_outputs
 
 
 def augmented_voting_inference(
@@ -478,41 +498,48 @@ def evaluate_model_vllm(
         outputs_with_metadata = list(zip(outputs, prompt_metadata))
         
     elif inference_mode == "deep_dive":
-        # Deep dive: iterate per problem
-        print(f"\nRunning deep dive inference (up to {deep_dive_iterations} iterations per problem)...")
-        outputs_with_metadata = []
+        # Deep dive: batched iterative refinement
+        print(f"\nRunning deep dive inference (up to {deep_dive_iterations} iterations)...")
         
+        # Collect all samples with metadata
+        all_samples = []
+        all_metadata = []
         for level, samples in level_samples.items():
             for sample_idx, sample in enumerate(samples):
-                print(f"  Problem: Level {level}, Sample {sample_idx}")
-                generated_text = deep_dive_inference(
-                    llm=llm,
-                    tokenizer=tokenizer,
-                    sample=sample,
-                    system_prompt=system_prompt if use_system_prompt else "",
-                    sampling_params=sampling_params,
-                    lora_request=lora_request,
-                    max_iterations=deep_dive_iterations
-                )
-                
-                # Create a fake output object for compatibility
-                class FakeOutput:
-                    def __init__(self, text):
-                        self.text = text
-                    
-                class FakeOutputWrapper:
-                    def __init__(self, text):
-                        self.outputs = [FakeOutput(text)]
-                
-                outputs_with_metadata.append((
-                    FakeOutputWrapper(generated_text),
-                    {
-                        'level': level,
-                        'sample_idx': sample_idx,
-                        'sample': sample,
-                        'attempt': 0
-                    }
-                ))
+                all_samples.append(sample)
+                all_metadata.append({
+                    'level': level,
+                    'sample_idx': sample_idx,
+                    'sample': sample,
+                    'attempt': 0
+                })
+        
+        print(f"  Processing {len(all_samples)} problems in batched mode...")
+        
+        # Run batched deep dive inference
+        generated_texts = deep_dive_inference_batched(
+            llm=llm,
+            tokenizer=tokenizer,
+            samples=all_samples,
+            system_prompt=system_prompt if use_system_prompt else "",
+            sampling_params=sampling_params,
+            lora_request=lora_request,
+            max_iterations=deep_dive_iterations
+        )
+        
+        # Create output objects for compatibility
+        class FakeOutput:
+            def __init__(self, text):
+                self.text = text
+        
+        class FakeOutputWrapper:
+            def __init__(self, text):
+                self.outputs = [FakeOutput(text)]
+        
+        outputs_with_metadata = [
+            (FakeOutputWrapper(text), metadata)
+            for text, metadata in zip(generated_texts, all_metadata)
+        ]
         
     elif inference_mode == "augmented_voting":
         # Augmented voting: apply augmentations and vote

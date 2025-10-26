@@ -33,7 +33,7 @@ python evaluate_model.py model_path --inference-mode standard --attempts 3
 
 ## 2. Deep Dive Method
 
-An iterative refinement approach that feeds the model's output back as input for up to N iterations.
+An iterative refinement approach that feeds the model's output back as input for up to N iterations. **All problems are processed in batches at each iteration for maximum efficiency.**
 
 **Usage:**
 ```bash
@@ -41,16 +41,18 @@ python evaluate_model.py model_path --inference-mode deep_dive --deep-dive-itera
 ```
 
 **How it works:**
-1. Generate an initial prediction for the problem
-2. Replace the test output section with the generated answer
-3. Feed the updated problem back to the model
-4. Repeat for up to N iterations (or until parsing fails)
-5. Return the final iteration's output
+1. **Iteration 1**: Generate predictions for ALL problems in batch
+2. Parse each output and update problem statements with generated answers
+3. **Iteration 2**: Generate new predictions for all problems that succeeded (batched)
+4. Continue iterating, batching all active problems together
+5. Stop when max iterations reached or all problems fail to parse
+6. Return the final iteration's output for each problem
 
 **Features:**
 - Allows the model to refine its answer iteratively
+- **Efficient batching**: All problems processed together at each iteration
+- Automatically removes problems from the batch if parsing fails
 - Can help models "think through" complex problems step by step
-- Stops early if the model produces unparseable output
 
 **Parameters:**
 - `--deep-dive-iterations N`: Maximum number of iterations (default: 16)
@@ -59,6 +61,11 @@ python evaluate_model.py model_path --inference-mode deep_dive --deep-dive-itera
 - Models that can benefit from iterative refinement
 - Complex problems where initial answers might be rough drafts
 - Testing if models can self-correct
+
+**Performance:**
+- Processes all problems in batches at each iteration
+- Much more efficient than per-problem iteration
+- Example: 100 problems, 5 iterations = 5 batched vLLM calls (not 500!)
 
 ## 3. Augmented Voting Method
 
@@ -105,16 +112,21 @@ python evaluate_model.py model_path --inference-mode augmented_voting --num-augm
 ### Standard
 - **Speed**: Fastest
 - **vLLM Passes**: 1 (or N for multiple attempts)
+- **Batching**: All problems in one batch
 - **Best When**: Quick evaluation needed
 
 ### Deep Dive
-- **Speed**: Slowest (sequential)
-- **vLLM Passes**: Up to N per problem (16 by default)
+- **Speed**: Medium (iterative but batched)
+- **vLLM Passes**: Up to N iterations (batching all problems at each iteration)
+- **Batching**: All active problems batched together at each iteration
+- **Example**: 100 problems × 5 iterations = 5 batched calls (not 500!)
 - **Best When**: Model benefits from iterative refinement
 
 ### Augmented Voting
-- **Speed**: Medium (efficient batching)
-- **vLLM Passes**: 1 per problem (all augmentations batched)
+- **Speed**: Slowest (many augmentations per problem)
+- **vLLM Passes**: 1 per problem (all augmentations batched together)
+- **Batching**: All 30 augmentations processed in one batch per problem
+- **Example**: 100 problems × 30 augmentations = 100 batched calls of 30 prompts each
 - **Best When**: Seeking robust predictions through augmentation
 
 ## Examples
