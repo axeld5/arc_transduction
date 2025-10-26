@@ -222,6 +222,15 @@ python evaluate_model.py unsloth/Qwen2.5-3B-Instruct \
     --samples-per-level 10
 ```
 
+### Augmented deep dive (hybrid) - maximum robustness
+```bash
+python evaluate_model.py unsloth/Qwen2.5-3B-Instruct \
+    --inference-mode augmented_deep_dive \
+    --num-augmentations 30 \
+    --deep-dive-iterations 16 \
+    --samples-per-level 10
+```
+
 ### Using with LoRA adapter
 ```bash
 python evaluate_model.py unsloth/Qwen2.5-3B-Instruct \
