@@ -160,7 +160,20 @@ def deep_dive_inference_batched(
                 continue
             
             # Update problem with new output for next iteration
-            if "Test Input:" in current_problems[idx]:
+            if "Test Case:" in current_problems[idx]:
+                # Format: ...Test Case:\nInput:\n[grid]\nOutput Placeholder:...\nOutput:
+                # Split at "Test Case:" and keep everything before it, then reconstruct with new output
+                before_test = current_problems[idx].split("Test Case:")[0]
+                test_part = "Test Case:" + current_problems[idx].split("Test Case:")[1]
+                # Find where "Output:" appears (the final one where we generate)
+                if "Output:" in test_part:
+                    test_section = test_part.split("Output:")[0]  # Everything up to final "Output:"
+                    current_problems[idx] = before_test + test_section + f"Output:\n{grid_to_string(generated_grid)}"
+                else:
+                    # Fallback
+                    current_problems[idx] = current_problems[idx].rsplit('Output:', 1)[0] + f"Output:\n{grid_to_string(generated_grid)}"
+            elif "Test Input:" in current_problems[idx]:
+                # Alternative format: Test Input:
                 before_test = current_problems[idx].split("Test Input:")[0]
                 test_section = "Test Input:" + current_problems[idx].split("Test Input:")[1].split("Output:")[0]
                 current_problems[idx] = before_test + test_section + f"Output:\n{grid_to_string(generated_grid)}"
@@ -215,7 +228,7 @@ def augmented_voting_inference(
     # Extract input/output examples from the problem using regex
     # Format: Example N:\nInput:\n[grid]\nOutput:\n[grid]
     examples = []
-    example_pattern = r'Example \d+:\s*Input:\s*(.*?)\s*Output:\s*(.*?)(?=Example \d+:|Test Input:|$)'
+    example_pattern = r'Example \d+:\s*Input:\s*(.*?)\s*Output:\s*(.*?)(?=Example \d+:|Test Case:|$)'
     matches = re.findall(example_pattern, problem_text, re.DOTALL)
     
     for input_section, output_section in matches:
@@ -226,7 +239,8 @@ def augmented_voting_inference(
             examples.append((input_grid, output_grid))
     
     # Extract test input
-    test_input_match = re.search(r'Test Input:\s*(.*?)(?:\s*Output:|$)', problem_text, re.DOTALL)
+    # Format: Test Case:\nInput:\n[grid]\nOutput Placeholder:...\nOutput:
+    test_input_match = re.search(r'Test Case:\s*Input:\s*(.*?)(?:\s*Output Placeholder:|$)', problem_text, re.DOTALL)
     if test_input_match:
         test_input_section = test_input_match.group(1).strip()
         test_input_grid = parse_grid_from_string(test_input_section)
@@ -302,7 +316,7 @@ def augmented_voting_inference(
         for idx, (aug_input, aug_output) in enumerate(augmented_examples, 1):
             augmented_problem += f"Example {idx}:\nInput:\n{grid_to_string(aug_input)}\n\nOutput:\n{grid_to_string(aug_output)}\n\n"
         
-        augmented_problem += f"Test Input:\n{grid_to_string(aug_test_input)}\n\nOutput:"
+        augmented_problem += f"Test Case:\nInput:\n{grid_to_string(aug_test_input)}\n\nOutput:"
         
         # Create prompt
         content = f"{system_prompt}\n\n{augmented_problem}" if system_prompt else augmented_problem
