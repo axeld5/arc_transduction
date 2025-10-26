@@ -335,7 +335,7 @@ if __name__ == "__main__":
         train_data_path="generated_data/train_data.json",
         eval_data_path="generated_data/eval_data.json",
         output_dir="qwen2.5_3b_transduction_sft",
-        base_model="Qwen/Qwen2.5-3B-Instruct",
+        base_model="Qwen/Qwen2.5-0.5B-Instruct",
         learning_rate=5e-5,
         num_train_epochs=3,
         per_device_batch_size=4,
