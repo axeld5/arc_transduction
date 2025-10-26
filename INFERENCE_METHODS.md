@@ -69,7 +69,7 @@ python evaluate_model.py model_path --inference-mode deep_dive --deep-dive-itera
 
 ## 3. Augmented Voting Method
 
-Applies multiple augmentations to the problem, generates predictions for each, reverses the augmentations, and takes a majority vote.
+Applies multiple augmentations to ALL problems, generates predictions in one giant batch, reverses augmentations, and takes majority votes. **All problems are processed together for maximum vLLM efficiency.**
 
 **Usage:**
 ```bash
@@ -77,21 +77,22 @@ python evaluate_model.py model_path --inference-mode augmented_voting --num-augm
 ```
 
 **How it works:**
-1. Parse the problem structure (examples + test input)
-2. Generate N different augmentation configurations:
+1. Parse ALL problem structures (examples + test input)
+2. Generate N augmentation configurations (shared across all problems):
    - Rotations (90°, 180°, 270°)
    - Flips (vertical, horizontal, both)
    - Color permutations
-3. Apply each augmentation to ALL grids in the problem (examples + test input)
-4. Generate predictions for all augmented problems in ONE batch (efficient!)
-5. Reverse the augmentations on each prediction
-6. Take the most common (majority vote) answer
+3. Apply each augmentation to ALL grids in ALL problems
+4. **Generate predictions for ALL augmented problems in ONE GIANT batch** (max efficiency!)
+5. Reverse the augmentations on each prediction (skip if reversal fails)
+6. Take the most common (majority vote) answer per problem
 
 **Features:**
 - Test-time augmentation for improved robustness
-- Efficient batch generation (all augmentations in one vLLM pass)
-- Automatic augmentation reversal
-- Majority voting for consensus
+- **Ultra-efficient batching**: All problems × all augmentations in ONE vLLM pass
+- Automatic augmentation reversal with graceful failure handling
+- Majority voting for consensus per problem
+- Skips failed reversals instead of crashing
 
 **Parameters:**
 - `--num-augmentations N`: Number of augmented versions (default: 30)
@@ -102,9 +103,11 @@ python evaluate_model.py model_path --inference-mode augmented_voting --num-augm
 - Problems where the pattern is invariant to certain transformations
 
 **Implementation Details:**
+- Batches ALL problems together (not per-problem)
 - Uses regex to parse problem structure robustly
 - Tracks color maps for proper reversal
 - Falls back to standard inference if parsing fails
+- Gracefully handles reversal failures (skips in vote counter)
 - Preserves original problem introduction text
 
 ## Performance Considerations
@@ -123,10 +126,10 @@ python evaluate_model.py model_path --inference-mode augmented_voting --num-augm
 - **Best When**: Model benefits from iterative refinement
 
 ### Augmented Voting
-- **Speed**: Slowest (many augmentations per problem)
-- **vLLM Passes**: 1 per problem (all augmentations batched together)
-- **Batching**: All 30 augmentations processed in one batch per problem
-- **Example**: 100 problems × 30 augmentations = 100 batched calls of 30 prompts each
+- **Speed**: Medium-Slow (many augmentations but ultra-efficient batching)
+- **vLLM Passes**: 1 total (all problems × all augmentations in ONE batch!)
+- **Batching**: ALL problems × ALL augmentations in a single giant batch
+- **Example**: 100 problems × 30 augmentations = 1 batched call with 3,000 prompts
 - **Best When**: Seeking robust predictions through augmentation
 
 ## Examples

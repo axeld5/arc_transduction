@@ -195,83 +195,109 @@ def deep_dive_inference_batched(
     return final_outputs
 
 
-def augmented_voting_inference(
+def augmented_voting_inference_batched(
     llm,
     tokenizer,
-    sample: Dict[str, Any],
+    samples: List[Dict[str, Any]],
     system_prompt: str,
     sampling_params,
     lora_request=None,
     num_augmentations: int = 30,
-) -> str:
+) -> List[str]:
     """
-    Augmented voting inference: apply augmentations, infer, reverse, and vote.
+    Batched augmented voting inference: apply augmentations to all problems, infer in one batch, reverse, and vote.
+    Processes ALL problems together for maximum vLLM efficiency.
     
     Args:
         llm: vLLM model instance
         tokenizer: Tokenizer instance
-        sample: Problem sample with 'problem' field
+        samples: List of problem samples with 'problem' field
         system_prompt: System prompt to prepend
         sampling_params: Sampling parameters for generation
         lora_request: LoRA request if using LoRA
         num_augmentations: Number of augmented versions to create (default: 30)
     
     Returns:
-        Majority vote answer
+        List of majority vote answers (one per sample)
     """
     from reward_functions import parse_grid_from_string
     import re
     
-    # Parse the input grids from the problem
-    problem_text = sample['problem']
+    num_samples = len(samples)
     
-    # Extract input/output examples from the problem using regex
-    # Format: Example N:\nInput:\n[grid]\nOutput:\n[grid]
-    examples = []
-    example_pattern = r'Example \d+:\s*Input:\s*(.*?)\s*Output:\s*(.*?)(?=Example \d+:|Test Case:|$)'
-    matches = re.findall(example_pattern, problem_text, re.DOTALL)
+    # Parse all problems upfront
+    parsed_problems = []
+    fallback_indices = []  # Samples that need standard inference
     
-    for input_section, output_section in matches:
-        input_grid = parse_grid_from_string(input_section.strip())
-        output_grid = parse_grid_from_string(output_section.strip())
+    for sample_idx, sample in enumerate(samples):
+        problem_text = sample['problem']
         
-        if input_grid and output_grid:
-            examples.append((input_grid, output_grid))
+        # Extract input/output examples
+        examples = []
+        example_pattern = r'Example \d+:\s*Input:\s*(.*?)\s*Output:\s*(.*?)(?=Example \d+:|Test Case:|$)'
+        matches = re.findall(example_pattern, problem_text, re.DOTALL)
+        
+        for input_section, output_section in matches:
+            input_grid = parse_grid_from_string(input_section.strip())
+            output_grid = parse_grid_from_string(output_section.strip())
+            
+            if input_grid and output_grid:
+                examples.append((input_grid, output_grid))
+        
+        # Extract test input
+        test_input_match = re.search(r'Test Case:\s*Input:\s*(.*?)(?:\s*Output Placeholder:|$)', problem_text, re.DOTALL)
+        if test_input_match:
+            test_input_section = test_input_match.group(1).strip()
+            test_input_grid = parse_grid_from_string(test_input_section)
+        else:
+            test_input_grid = None
+        
+        if not test_input_grid or not examples:
+            # Mark for fallback
+            fallback_indices.append(sample_idx)
+            parsed_problems.append(None)
+        else:
+            # Store parsed data
+            intro = ""
+            if "Training Examples:" in problem_text:
+                intro = problem_text.split("Training Examples:")[0].strip() + "\n\nTraining Examples:\n"
+            elif "Example 1:" in problem_text:
+                intro = problem_text.split("Example 1:")[0].strip() + "\n\n"
+            
+            parsed_problems.append({
+                'examples': examples,
+                'test_input': test_input_grid,
+                'intro': intro
+            })
     
-    # Extract test input
-    # Format: Test Case:\nInput:\n[grid]\nOutput Placeholder:...\nOutput:
-    test_input_match = re.search(r'Test Case:\s*Input:\s*(.*?)(?:\s*Output Placeholder:|$)', problem_text, re.DOTALL)
-    if test_input_match:
-        test_input_section = test_input_match.group(1).strip()
-        test_input_grid = parse_grid_from_string(test_input_section)
-    else:
-        test_input_grid = None
-    
-    if not test_input_grid or not examples:
-        # Can't augment without proper inputs, fall back to regular inference
-        print(f"    Warning: Failed to parse problem structure, falling back to standard inference")
-        content = f"{system_prompt}\n\n{problem_text}" if system_prompt else problem_text
-        messages = [{"role": "user", "content": content}]
-        formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # Handle fallback cases with standard inference
+    fallback_results = {}
+    if fallback_indices:
+        print(f"    {len(fallback_indices)} problems need fallback to standard inference")
+        fallback_prompts = []
+        for idx in fallback_indices:
+            problem_text = samples[idx]['problem']
+            content = f"{system_prompt}\n\n{problem_text}" if system_prompt else problem_text
+            messages = [{"role": "user", "content": content}]
+            formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            fallback_prompts.append(formatted_prompt)
         
         if lora_request:
-            outputs = llm.generate([formatted_prompt], sampling_params=sampling_params, lora_request=lora_request)
+            fallback_outputs = llm.generate(fallback_prompts, sampling_params=sampling_params, lora_request=lora_request)
         else:
-            outputs = llm.generate([formatted_prompt], sampling_params=sampling_params)
+            fallback_outputs = llm.generate(fallback_prompts, sampling_params=sampling_params)
         
-        return outputs[0].outputs[0].text
+        for i, idx in enumerate(fallback_indices):
+            fallback_results[idx] = fallback_outputs[i].outputs[0].text
     
-    # Generate augmentations
+    # Generate augmentations (same for all problems)
     augmentation_configs = []
     for i in range(num_augmentations):
-        # Use seed for reproducibility
         aug_list = assign_random_augmentations(seed=i)
         
-        # Track augmentations with their color maps if applicable
         aug_with_kwargs = []
         for aug_func in aug_list:
             if aug_func == apply_color_permutation:
-                # Generate color map with same seed
                 random.seed(i)
                 colors = list(range(10))
                 shuffled_colors = colors.copy()
@@ -286,75 +312,102 @@ def augmented_voting_inference(
         
         augmentation_configs.append(aug_with_kwargs)
     
-    # Create all augmented problems in batch
+    # Create ALL augmented problems for ALL samples in ONE giant batch
     all_prompts = []
-    for aug_config in augmentation_configs:
-        # Apply augmentations to all grids
-        augmented_examples = []
-        for input_grid, output_grid in examples:
-            aug_input = input_grid
-            aug_output = output_grid
+    prompt_metadata = []  # Track which sample/augmentation each prompt belongs to
+    
+    for sample_idx, parsed in enumerate(parsed_problems):
+        if parsed is None:
+            # Skip fallback samples
+            continue
+        
+        examples = parsed['examples']
+        test_input_grid = parsed['test_input']
+        intro = parsed['intro']
+        
+        for aug_idx, aug_config in enumerate(augmentation_configs):
+            # Apply augmentations to all grids
+            augmented_examples = []
+            for input_grid, output_grid in examples:
+                aug_input = input_grid
+                aug_output = output_grid
+                for aug_func, kwargs in aug_config:
+                    aug_input = aug_func(aug_input, **kwargs)
+                    aug_output = aug_func(aug_output, **kwargs)
+                augmented_examples.append((aug_input, aug_output))
+            
+            # Apply to test input
+            aug_test_input = test_input_grid
             for aug_func, kwargs in aug_config:
-                aug_input = aug_func(aug_input, **kwargs)
-                aug_output = aug_func(aug_output, **kwargs)
-            augmented_examples.append((aug_input, aug_output))
-        
-        # Apply to test input
-        aug_test_input = test_input_grid
-        for aug_func, kwargs in aug_config:
-            aug_test_input = aug_func(aug_test_input, **kwargs)
-        
-        # Reconstruct problem with augmented grids
-        # Add the introduction if present in original
-        intro = ""
-        if "Training Examples:" in problem_text:
-            intro = problem_text.split("Training Examples:")[0].strip() + "\n\nTraining Examples:\n"
-        elif "Example 1:" in problem_text:
-            intro = problem_text.split("Example 1:")[0].strip() + "\n\n"
-        
-        augmented_problem = intro
-        for idx, (aug_input, aug_output) in enumerate(augmented_examples, 1):
-            augmented_problem += f"Example {idx}:\nInput:\n{grid_to_string(aug_input)}\n\nOutput:\n{grid_to_string(aug_output)}\n\n"
-        
-        augmented_problem += f"Test Case:\nInput:\n{grid_to_string(aug_test_input)}\n\nOutput:"
-        
-        # Create prompt
-        content = f"{system_prompt}\n\n{augmented_problem}" if system_prompt else augmented_problem
-        messages = [{"role": "user", "content": content}]
-        formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        all_prompts.append(formatted_prompt)
+                aug_test_input = aug_func(aug_test_input, **kwargs)
+            
+            # Reconstruct problem
+            augmented_problem = intro
+            for idx, (aug_input, aug_output) in enumerate(augmented_examples, 1):
+                augmented_problem += f"Example {idx}:\nInput:\n{grid_to_string(aug_input)}\n\nOutput:\n{grid_to_string(aug_output)}\n\n"
+            
+            augmented_problem += f"Test Case:\nInput:\n{grid_to_string(aug_test_input)}\n\nOutput:"
+            
+            # Create prompt
+            content = f"{system_prompt}\n\n{augmented_problem}" if system_prompt else augmented_problem
+            messages = [{"role": "user", "content": content}]
+            formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            all_prompts.append(formatted_prompt)
+            
+            # Track metadata
+            prompt_metadata.append({
+                'sample_idx': sample_idx,
+                'aug_idx': aug_idx,
+                'aug_config': aug_config
+            })
     
-    # Generate ALL outputs in ONE batch
-    print(f"  Generating {len(all_prompts)} augmented predictions in batch...")
-    if lora_request:
-        outputs = llm.generate(all_prompts, sampling_params=sampling_params, lora_request=lora_request)
+    # Generate ALL outputs in ONE GIANT batch
+    if all_prompts:
+        print(f"  Generating {len(all_prompts)} augmented predictions in ONE batch ({len(parsed_problems) - len(fallback_indices)} problems × {num_augmentations} augmentations)...")
+        if lora_request:
+            outputs = llm.generate(all_prompts, sampling_params=sampling_params, lora_request=lora_request)
+        else:
+            outputs = llm.generate(all_prompts, sampling_params=sampling_params)
     else:
-        outputs = llm.generate(all_prompts, sampling_params=sampling_params)
+        outputs = []
     
-    # Reverse augmentations and collect votes
-    reversed_grids = []
-    for output, aug_config in zip(outputs, augmentation_configs):
+    # Collect votes per sample
+    sample_votes = {i: [] for i in range(num_samples) if i not in fallback_indices}
+    
+    for output, metadata in zip(outputs, prompt_metadata):
+        sample_idx = metadata['sample_idx']
+        aug_config = metadata['aug_config']
+        
         generated_text = output.outputs[0].text
         generated_grid = parse_grid_from_string(generated_text)
         
         if generated_grid:
-            # Reverse the augmentations
-            reversed_grid = reverse_augmentations_on_grid(generated_grid, aug_config)
-            reversed_grids.append(reversed_grid)
+            try:
+                # Try to reverse the augmentations
+                reversed_grid = reverse_augmentations_on_grid(generated_grid, aug_config)
+                grid_string = grid_to_string(reversed_grid)
+                sample_votes[sample_idx].append(grid_string)
+            except Exception:
+                # Skip failed reversals (as per user's request)
+                pass
     
-    if not reversed_grids:
-        # All failed to parse, return first output
-        return outputs[0].outputs[0].text
+    # Compute majority vote for each sample
+    final_results = [None] * num_samples
     
-    # Vote on the most common grid
-    # Convert grids to strings for comparison
-    grid_strings = [grid_to_string(grid) for grid in reversed_grids]
-    vote_counter = Counter(grid_strings)
-    most_common = vote_counter.most_common(1)[0][0]
+    for sample_idx in range(num_samples):
+        if sample_idx in fallback_results:
+            # Use fallback result
+            final_results[sample_idx] = fallback_results[sample_idx]
+        elif sample_votes[sample_idx]:
+            # Vote on most common
+            vote_counter = Counter(sample_votes[sample_idx])
+            most_common = vote_counter.most_common(1)[0][0]
+            final_results[sample_idx] = most_common
+        else:
+            # All augmentations failed, use empty grid
+            final_results[sample_idx] = ""
     
-    print(f"  Voting: {vote_counter.most_common(3)[:3]} (showing top 3)")
-    
-    return most_common
+    return final_results
 
 
 def evaluate_model_vllm(
@@ -556,41 +609,48 @@ def evaluate_model_vllm(
         ]
         
     elif inference_mode == "augmented_voting":
-        # Augmented voting: apply augmentations and vote
+        # Augmented voting: batched augmentation and voting
         print(f"\nRunning augmented voting inference ({num_augmentations} augmentations per problem)...")
-        outputs_with_metadata = []
         
+        # Collect all samples with metadata
+        all_samples = []
+        all_metadata = []
         for level, samples in level_samples.items():
             for sample_idx, sample in enumerate(samples):
-                print(f"  Problem: Level {level}, Sample {sample_idx}")
-                generated_text = augmented_voting_inference(
-                    llm=llm,
-                    tokenizer=tokenizer,
-                    sample=sample,
-                    system_prompt=system_prompt if use_system_prompt else "",
-                    sampling_params=sampling_params,
-                    lora_request=lora_request,
-                    num_augmentations=num_augmentations
-                )
-                
-                # Create a fake output object for compatibility
-                class FakeOutput:
-                    def __init__(self, text):
-                        self.text = text
-                    
-                class FakeOutputWrapper:
-                    def __init__(self, text):
-                        self.outputs = [FakeOutput(text)]
-                
-                outputs_with_metadata.append((
-                    FakeOutputWrapper(generated_text),
-                    {
-                        'level': level,
-                        'sample_idx': sample_idx,
-                        'sample': sample,
-                        'attempt': 0
-                    }
-                ))
+                all_samples.append(sample)
+                all_metadata.append({
+                    'level': level,
+                    'sample_idx': sample_idx,
+                    'sample': sample,
+                    'attempt': 0
+                })
+        
+        print(f"  Processing {len(all_samples)} problems in batched mode...")
+        
+        # Run batched augmented voting inference
+        generated_texts = augmented_voting_inference_batched(
+            llm=llm,
+            tokenizer=tokenizer,
+            samples=all_samples,
+            system_prompt=system_prompt if use_system_prompt else "",
+            sampling_params=sampling_params,
+            lora_request=lora_request,
+            num_augmentations=num_augmentations
+        )
+        
+        # Create output objects for compatibility
+        class FakeOutput:
+            def __init__(self, text):
+                self.text = text
+        
+        class FakeOutputWrapper:
+            def __init__(self, text):
+                self.outputs = [FakeOutput(text)]
+        
+        outputs_with_metadata = [
+            (FakeOutputWrapper(text), metadata)
+            for text, metadata in zip(generated_texts, all_metadata)
+        ]
     else:
         raise ValueError(f"Unknown inference mode: {inference_mode}")
     
