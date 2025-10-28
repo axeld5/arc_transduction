@@ -513,7 +513,7 @@ def batch_test_time_evaluate(
 if __name__ == "__main__":
     # Example: Test-time RL on a single problem (Level 3 = 3x3 zeros placeholder)
     result = test_time_evaluate(
-        base_model="Qwen/Qwen2.5-3B-Instruct",
+        base_model="qwen2.5_3b_transduction_sft/merged",
         eval_data_path="generated_data/eval_data.json",
         output_dir="test_time_rl_output",
         problem_idx=0,
