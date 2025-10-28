@@ -78,13 +78,14 @@ def from_data_to_problem(data: Dict[str, Any], include_test_output: bool = False
     }
 
 
-def augment_problem(problem_data: Dict[str, Any], seed: int = None) -> Dict[str, Any]:
+def augment_problem(problem_data: Dict[str, Any], seed: int = None, shuffle_train_order: bool = True) -> Dict[str, Any]:
     """
     Apply random augmentations to an entire problem (train and test examples).
     
     Args:
         problem_data: Original problem data
         seed: Random seed for reproducibility
+        shuffle_train_order: If True, randomly shuffle the order of training examples
         
     Returns:
         Augmented problem data
@@ -128,6 +129,10 @@ def augment_problem(problem_data: Dict[str, Any], seed: int = None) -> Dict[str,
             'output': augmented_all[grid_idx + 1]
         })
         grid_idx += 2
+    
+    # Shuffle training examples order if enabled (50% chance for variety)
+    if shuffle_train_order and len(augmented_data['train']) > 1 and random.random() < 0.5:
+        random.shuffle(augmented_data['train'])
     
     # Rebuild test examples
     for i in range(test_count):
@@ -762,6 +767,10 @@ if __name__ == "__main__":
     print("")
     print("Configuration:")
     print("  - 30 augmented versions per problem")
+    print("  - Augmentations include:")
+    print("    * Geometric transformations (rotation, flip, transpose)")
+    print("    * Color permutations")
+    print("    * Training example order shuffling (50% chance)")
     print("  - Level 0: Unmodified (ground truth in test output)")
     print("  - Levels 1-4: 5 placeholders per level")
     print("    * Level 1: Input/ground truth with random pixel modifications")
