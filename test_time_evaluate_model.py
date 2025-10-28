@@ -22,10 +22,10 @@ from datasets import Dataset
 
 from create_train_data import (
     create_training_examples_for_problem_eval,
-    convert_to_rl_format
 )
 from reward_functions import reward_function_diff
 from evaluate_model import evaluate_model_vllm
+from transduction_rl_unigpu import convert_to_rl_format
 
 load_dotenv()
 if os.getenv("HF_TOKEN"):
