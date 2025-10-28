@@ -208,3 +208,5 @@ __marimo__/
 
 generated_data/*.json
 unsloth_compiled_cache/
+soar_training_data/
+arc_heavy_training_data/
