@@ -93,8 +93,23 @@ def run_rl_for_level(
     use_system_prompt: bool = True,
     use_dense_reward: bool = True,
     phase: str = "",
+    save_merged: bool = False,
 ):
-    """Run RL training for a specific level with specified reward type."""
+    """
+    Run RL training for a specific level with specified reward type.
+    
+    Args:
+        level: Current training level
+        train_data: Training data for this level
+        model_path: Path to base model or previous adapter checkpoint
+        output_dir: Directory to save outputs
+        learning_rate: Learning rate for training
+        max_steps: Maximum training steps
+        use_system_prompt: Whether to use system prompt
+        use_dense_reward: Whether to use dense (True) or discrete (False) reward
+        phase: Phase description string
+        save_merged: Whether to save merged model (only True for final step)
+    """
     reward_type = "DENSE" if use_dense_reward else "DISCRETE"
     print(f"\n{'='*60}")
     print(f"Starting RL training for Level {level} {phase}")
@@ -103,10 +118,12 @@ def run_rl_for_level(
     print(f"Learning rate: {learning_rate}")
     print(f"Reward type: {reward_type}")
     print(f"Using system prompt: {use_system_prompt}")
+    print(f"Save merged model: {save_merged}")
+    print(f"Loading from: {model_path}")
     print(f"{'='*60}")
     
     max_seq_length = 16000
-    lora_rank = 128
+    lora_rank = 256
     
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_path,
@@ -118,7 +135,7 @@ def run_rl_for_level(
     
     model = FastLanguageModel.get_peft_model(
         model,
-        r=8,
+        r=1,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                        "gate_proj", "up_proj", "down_proj"],
         lora_dropout=0,
@@ -131,11 +148,6 @@ def run_rl_for_level(
     converted = convert_to_rl_format(train_data, use_system_prompt=use_system_prompt)
     dataset = Dataset.from_list(converted)
     print(f"Dataset size: {len(dataset)}")
-    
-    vllm_sampling_params = SamplingParams(
-        stop=[tokenizer.eos_token],
-        include_stop_str_in_output=True,
-    )
     
     # Create reward function wrapper with appropriate dense/discrete setting
     def reward_func(completions, expected_output, **kwargs):
@@ -180,21 +192,26 @@ def run_rl_for_level(
     trainer.train()
     
     final_path = os.path.join(output_dir, "final")
-    merged_path = os.path.join(output_dir, "merged")
     
-    # Save LoRA adapter
+    # Always save LoRA adapter
     print(f"[RL Level {level} {phase}] Saving LoRA adapter to {final_path}...")
     trainer.save_model(final_path)
     tokenizer.save_pretrained(final_path)
     
-    # Save merged 16bit model (required for next training stage)
-    print(f"[RL Level {level} {phase}] Saving merged 16bit model to {merged_path}...")
-    try:
-        model.save_pretrained_merged(merged_path, tokenizer, save_method="merged_16bit")
-        print(f"[RL Level {level} {phase}] Successfully saved merged 16bit model")
-    except Exception as e:
-        print(f"[RL Level {level} {phase}] ERROR: Failed to save merged model: {e}")
-        raise
+    # Only save merged model if requested (final step)
+    return_path = final_path
+    if save_merged:
+        merged_path = os.path.join(output_dir, "merged")
+        print(f"[RL Level {level} {phase}] Saving merged 16bit model to {merged_path}...")
+        try:
+            model.save_pretrained_merged(merged_path, tokenizer, save_method="merged_16bit")
+            print(f"[RL Level {level} {phase}] Successfully saved merged 16bit model")
+            return_path = merged_path
+        except Exception as e:
+            print(f"[RL Level {level} {phase}] ERROR: Failed to save merged model: {e}")
+            raise
+    else:
+        print(f"[RL Level {level} {phase}] Skipping merged model save (intermediate step)")
     
     # Clean up trainer and vLLM communicator to free resources
     print(f"[RL Level {level} {phase}] Cleaning up trainer and vLLM resources...")
@@ -218,7 +235,7 @@ def run_rl_for_level(
         torch.cuda.synchronize()
     print(f"[RL Level {level} {phase}] Cleanup complete")
     
-    return merged_path
+    return return_path
 
 
 # ========== MAIN CURRICULUM TRAINING ==========
@@ -232,17 +249,19 @@ def run_curriculum_training(
     use_system_prompt: bool = True,
 ):
     """
-    Run curriculum training: Direct RL training by level (1-6).
+    Run curriculum training: Direct RL training by level (1-4).
     
     Training is cumulative: Level N includes data from levels 1 through N.
     - Level 1: trains on level 1 data only
     - Level 2: trains on levels 1 + 2 data
     - Level 3: trains on levels 1 + 2 + 3 data
-    - ... and so on
+    - Level 4: trains on all data (levels 1 + 2 + 3 + 4)
     
     Each level has two training phases:
       - Phase 1: Dense reward (125 steps) - gives partial credit
       - Phase 2: Discrete reward (375 steps) - binary success/fail
+    
+    Adapters are accumulated across levels and only the final model is merged.
     
     Args:
         train_data_path: Path to training data JSON
@@ -259,9 +278,11 @@ def run_curriculum_training(
     print(f"Train data: {train_data_path}")
     print(f"Eval data: {eval_data_path}")
     print(f"Output directory: {base_output_dir}")
-    print(f"Training strategy: 2 phases per level")
+    print(f"Training strategy: 2 phases per level, adapter accumulation")
     print(f"  - Phase 1: Dense reward (125 steps)")
     print(f"  - Phase 2: Discrete reward (375 steps)")
+    print(f"  - Intermediate steps: Save adapters only")
+    print(f"  - Final step: Save merged model")
     print(f"Use system prompt: {use_system_prompt}")
     print(f"{'='*80}\n")
     
@@ -271,13 +292,13 @@ def run_curriculum_training(
         all_train_data = json.load(f)
     print(f"Total training examples: {len(all_train_data)}")
     
-    # Start with base model (no SFT step)
+    # Start with base model, then chain adapters
     current_model_path = base_model
     
-    # Iterative RL training by level (1-6)
+    # Iterative RL training by level (1-4)
     all_results = {}
     
-    for level in range(1, 7):
+    for level in range(1, 5):
         print(f"\n{'='*80}")
         print(f"STEP {level}: RL Training for Level {level}")
         print(f"{'='*80}")
@@ -295,6 +316,9 @@ def run_curriculum_training(
         
         print(f"Training on {len(level_data)} samples")
         
+        # Determine if this is the final level
+        is_final_level = (level == 4)
+        
         # Phase 1: Dense reward training (1/4 of steps)
         dense_steps = 125  # 1/4 of 500
         dense_output_dir = f"{base_output_dir}_rl_level{level}_dense"
@@ -307,6 +331,7 @@ def run_curriculum_training(
             use_system_prompt=use_system_prompt,
             use_dense_reward=True,
             phase="(Phase 1: Dense)",
+            save_merged=False,  # Never merge intermediate phases
         )
         
         # Phase 2: Discrete reward training (3/4 of steps)
@@ -321,6 +346,7 @@ def run_curriculum_training(
             use_system_prompt=use_system_prompt,
             use_dense_reward=False,
             phase="(Phase 2: Discrete)",
+            save_merged=is_final_level,  # Only merge on final level
         )
         
         # Evaluate after this level using vLLM
@@ -338,7 +364,7 @@ def run_curriculum_training(
         with open(f"{base_output_dir}_results.json", 'w') as f:
             json.dump(all_results, f, indent=2)
         
-        print(f"\n[Level {level} Complete] Model saved to: {current_model_path}")
+        print(f"\n[Level {level} Complete] Model path: {current_model_path}")
     
     print(f"\n{'='*80}")
     print("CURRICULUM TRAINING COMPLETE!")
