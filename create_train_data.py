@@ -221,8 +221,8 @@ def create_training_examples_for_problem_leaveoneout(
             }
         })
         
-        # Create placeholders for each level (6 levels, placeholders_per_augmentation per level)
-        for level in range(1, 7):
+        # Create placeholders for each level (4 levels, placeholders_per_augmentation per level)
+        for level in range(1, 5):
             for placeholder_idx in range(placeholders_per_augmentation):
                 # Create placeholder
                 placeholder_seed = hash(f"{problem_name}_loo_{held_out_idx}_{aug_idx}_{level}_{placeholder_idx}") % (2**32)
@@ -339,8 +339,8 @@ def create_training_examples_for_problem_eval(
             }
         })
         
-        # Create placeholders for each level (6 levels, placeholders_per_augmentation per level)
-        for level in range(1, 7):
+        # Create placeholders for each level (4 levels, placeholders_per_augmentation per level)
+        for level in range(1, 5):
             for placeholder_idx in range(placeholders_per_augmentation):
                 # Create placeholder
                 placeholder_seed = hash(f"{problem_name}_eval_{aug_idx}_{level}_{placeholder_idx}") % (2**32)
@@ -393,10 +393,11 @@ def create_training_data_for_concept(
     num_augmentations: int = 30,
     placeholders_per_augmentation: int = 20,
     data_dir: str = ".",
-    verbose: bool = True
+    verbose: bool = True,
+    problem_filter: callable = None
 ) -> List[Dict[str, Any]]:
     """
-    Create training data for all problems in a concept category.
+    Create training data for selected problems in a concept category.
     
     Args:
         concept: Concept category name (e.g., "AboveBelow")
@@ -405,6 +406,7 @@ def create_training_data_for_concept(
         placeholders_per_augmentation: Number of placeholders per augmentation
         data_dir: Root directory
         verbose: Print progress information
+        problem_filter: Optional function to filter which problems to process
         
     Returns:
         List of all training examples for the concept
@@ -422,6 +424,10 @@ def create_training_data_for_concept(
     
     # Get all problems for this concept
     problem_names = list_corpus_problems_by_concept(concept, data_dir=data_dir)
+    
+    # Apply filter if provided
+    if problem_filter:
+        problem_names = [name for name in problem_names if problem_filter(name)]
     
     all_training_examples = []
     
@@ -569,64 +575,211 @@ def create_training_data_for_corpus(
     return all_data
 
 
+def create_training_data_leave_one_file_out(
+    num_augmentations: int = 30,
+    placeholders_per_augmentation: int = 20,
+    data_dir: str = ".",
+    output_dir: str = None,
+    verbose: bool = True
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, List[Dict[str, Any]]]]:
+    """
+    Create training and evaluation data using leave-one-file-out strategy.
+    
+    For each concept folder:
+    - All JSON files except the last one are used for training
+    - The last JSON file is used for evaluation
+    
+    Args:
+        num_augmentations: Number of augmented versions per problem
+        placeholders_per_augmentation: Number of placeholders per augmentation
+        data_dir: Root directory containing corpus
+        output_dir: Directory to save output files (default: data_dir)
+        verbose: Print progress information
+        
+    Returns:
+        Tuple of (train_data, eval_data) dictionaries
+    """
+    if output_dir is None:
+        output_dir = data_dir
+    
+    # Create output directory
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Get all concepts
+    concepts = list_corpus_concepts(data_dir=data_dir)
+    
+    if verbose:
+        print(f"Found {len(concepts)} concepts in corpus")
+        print(f"Concepts: {', '.join(concepts)}")
+        print(f"Strategy: Leave-one-file-out (last file of each concept for eval)")
+        print("="*60)
+    
+    train_data = {}
+    eval_data = {}
+    train_combined = []
+    eval_combined = []
+    
+    # Process each concept
+    for concept_idx, concept in enumerate(concepts, 1):
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"Processing concept {concept_idx}/{len(concepts)}: {concept}")
+            print(f"{'='*60}")
+        
+        # Get all problems for this concept
+        all_problems = list_corpus_problems_by_concept(concept, data_dir=data_dir)
+        
+        if len(all_problems) == 0:
+            if verbose:
+                print(f"  Warning: No problems found for concept {concept}")
+            continue
+        
+        # Split: all but last for training, last for eval
+        train_problems = all_problems[:-1]
+        eval_problems = [all_problems[-1]]
+        
+        if verbose:
+            print(f"  Total problems: {len(all_problems)}")
+            print(f"  Training problems: {len(train_problems)} - {train_problems}")
+            print(f"  Evaluation problem: {eval_problems[0]}")
+        
+        # Create training examples (using eval method on train problems)
+        if verbose:
+            print(f"\n  Creating TRAINING data from {len(train_problems)} problems...")
+        
+        train_examples = create_training_data_for_concept(
+            concept=concept,
+            method="eval",  # Use eval method (actual test examples)
+            num_augmentations=num_augmentations,
+            placeholders_per_augmentation=placeholders_per_augmentation,
+            data_dir=data_dir,
+            verbose=verbose,
+            problem_filter=lambda name: name in train_problems
+        )
+        
+        train_data[concept] = train_examples
+        train_combined.extend(train_examples)
+        
+        # Create evaluation examples (using eval method on eval problem)
+        if verbose:
+            print(f"\n  Creating EVALUATION data from {len(eval_problems)} problem...")
+        
+        eval_examples = create_training_data_for_concept(
+            concept=concept,
+            method="eval",  # Use eval method (actual test examples)
+            num_augmentations=num_augmentations,
+            placeholders_per_augmentation=placeholders_per_augmentation,
+            data_dir=data_dir,
+            verbose=verbose,
+            problem_filter=lambda name: name in eval_problems
+        )
+        
+        eval_data[concept] = eval_examples
+        eval_combined.extend(eval_examples)
+    
+    # Save training data
+    train_file = os.path.join(output_dir, "train_data.json")
+    with open(train_file, 'w', encoding='utf-8') as f:
+        json.dump(train_combined, f, indent=2)
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"TRAINING DATA:")
+        print(f"  Total examples: {len(train_combined)}")
+        print(f"  Saved to: {train_file}")
+    
+    # Save evaluation data
+    eval_file = os.path.join(output_dir, "eval_data.json")
+    with open(eval_file, 'w', encoding='utf-8') as f:
+        json.dump(eval_combined, f, indent=2)
+    
+    if verbose:
+        print(f"\nEVALUATION DATA:")
+        print(f"  Total examples: {len(eval_combined)}")
+        print(f"  Saved to: {eval_file}")
+        print(f"{'='*60}")
+    
+    # Save summary for training data
+    train_summary = {
+        'method': 'leave_one_file_out_train',
+        'total_concepts': len(concepts),
+        'total_examples': len(train_combined),
+        'num_augmentations_per_problem': num_augmentations,
+        'placeholders_per_augmentation': placeholders_per_augmentation,
+        'concepts': {
+            concept: {
+                'num_examples': len(examples),
+                'num_problems': len(set(ex['metadata']['problem_name'] for ex in examples))
+            }
+            for concept, examples in train_data.items()
+        }
+    }
+    
+    train_summary_file = os.path.join(output_dir, "train_data_summary.json")
+    with open(train_summary_file, 'w', encoding='utf-8') as f:
+        json.dump(train_summary, f, indent=2)
+    
+    # Save summary for evaluation data
+    eval_summary = {
+        'method': 'leave_one_file_out_eval',
+        'total_concepts': len(concepts),
+        'total_examples': len(eval_combined),
+        'num_augmentations_per_problem': num_augmentations,
+        'placeholders_per_augmentation': placeholders_per_augmentation,
+        'concepts': {
+            concept: {
+                'num_examples': len(examples),
+                'num_problems': len(set(ex['metadata']['problem_name'] for ex in examples)),
+                'eval_problem': list(set(ex['metadata']['problem_name'] for ex in examples))[0] if examples else None
+            }
+            for concept, examples in eval_data.items()
+        }
+    }
+    
+    eval_summary_file = os.path.join(output_dir, "eval_data_summary.json")
+    with open(eval_summary_file, 'w', encoding='utf-8') as f:
+        json.dump(eval_summary, f, indent=2)
+    
+    if verbose:
+        print(f"\nSaved summaries:")
+        print(f"  Training: {train_summary_file}")
+        print(f"  Evaluation: {eval_summary_file}")
+    
+    return train_data, eval_data
+
+
 if __name__ == "__main__":
     import sys
-    
-    # Determine which method(s) to use from command line argument
-    methods = []  # Will contain methods to run
-    
-    if len(sys.argv) > 1:
-        # If argument provided, use only that method
-        if sys.argv[1] in ["eval", "leave_one_out"]:
-            methods = [sys.argv[1]]
-        else:
-            print(f"Invalid method: {sys.argv[1]}")
-            print("Usage: python create_train_data.py [eval|leave_one_out]")
-            print("  - No argument: Creates both eval_data.json and train_data.json")
-            print("  - eval: Creates only eval_data.json")
-            print("  - leave_one_out: Creates only train_data.json")
-            sys.exit(1)
-    else:
-        # No argument: run both methods
-        methods = ["eval", "leave_one_out"]
     
     print("="*60)
     print("Training Data Generation for ConceptARC Corpus")
     print("="*60)
-    print(f"Methods to run: {', '.join(methods)}")
-    print("  - eval: Uses actual test examples -> eval_data.json")
-    print("  - leave_one_out: Uses only training examples -> train_data.json")
+    print("")
+    print("Strategy: Leave-One-File-Out")
+    print("  - For each concept folder:")
+    print("    * All JSON files except the last one -> TRAINING")
+    print("    * The last JSON file -> EVALUATION")
     print("")
     print("Configuration:")
     print("  - 30 augmented versions per problem")
     print("  - Level 0: Unmodified (ground truth in test output)")
-    print("  - Levels 1-6: 5 placeholders per level")
-    print(f"  - Total per problem: 30x(1 + 5x6) = {30*(1+5*6)} examples")
-    print("  - Leave-one-out: Randomly selects 1 training example to hold out")
+    print("  - Levels 1-4: 5 placeholders per level")
+    print("    * Level 1: Input/ground truth with random pixel modifications")
+    print("    * Level 2: 50% dimension changes, 50% crop/upscale")
+    print("    * Level 3: 3x3 zeros matrix")
+    print("    * Level 4: 50% random matrix, 50% matrix from problem data")
+    print(f"  - Total per problem: 30x(1 + 5x4) = {30*(1+5*4)} examples")
     print("="*60)
     print("")
     
-    # Run each method
-    for method in methods:
-        print("\n" + "="*60)
-        print(f"RUNNING METHOD: {method}")
-        print("="*60)
-        print("")
-        
-        result = create_training_data_for_corpus(
-            method=method,
-            num_augmentations=30,
-            placeholders_per_augmentation=5,
-            data_dir=".",
-            output_dir="./generated_data/",  # Will save to current directory
-            save_by_concept=False,  # Only save combined file
-            save_combined=True,
-            verbose=True
-        )
-        
-        print("\n" + "="*60)
-        print(f"Completed method: {method}")
-        print("="*60)
+    # Run leave-one-file-out strategy
+    train_data, eval_data = create_training_data_leave_one_file_out(
+        num_augmentations=30,
+        placeholders_per_augmentation=5,
+        data_dir=".",
+        output_dir="./generated_data/",
+        verbose=True
+    )
     
     print("\n" + "="*60)
     print("All training data generation complete!")

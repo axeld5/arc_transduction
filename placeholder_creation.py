@@ -1,4 +1,4 @@
-"""Creates placeholder solutions for a problem with 6 difficulty levels"""
+"""Creates placeholder solutions for a problem with 4 difficulty levels (fused from original 6)"""
 
 from typing import Dict, Any, List
 import random
@@ -307,18 +307,16 @@ def create_placeholder(
     level: int = 1
 ) -> List[List[int]]:
     """
-    Creates a placeholder solution based on difficulty level (1-6).
+    Creates a placeholder solution based on difficulty level (1-4).
     
     Args:
         problem_data: The problem data containing train/test examples
         ground_truth: The actual solution matrix
-        level: Difficulty level (1-6)
+        level: Difficulty level (1-4)
             1: Input matrix or ground truth modified by random pixels (0 to max(width*2, 10))
-            2: Ground truth with 50/50 random addition OR removal of up to 2 rows and/or up to 2 columns (at least one dimension changed)
-            3: Random crop with dimensions below 7x7, with 50% chance of upscaling to up to 30x30 with zero padding
-            4: 3x3 zeros matrix
-            5: Random matrix (same size as ground truth)
-            6: Random matrix from problem data
+            2: 50% old level 2 (dimension changes), 50% old level 3 (crop/upscale)
+            3: 3x3 zeros matrix (old level 4)
+            4: 50% old level 5 (random matrix), 50% old level 6 (matrix from problem data)
     
     Returns:
         Placeholder matrix as list of lists
@@ -326,14 +324,19 @@ def create_placeholder(
     if level == 1:
         return create_level_1_placeholder(problem_data, ground_truth)
     elif level == 2:
-        return create_level_2_placeholder(problem_data, ground_truth)
+        # Fused level: 50% old level 2, 50% old level 3
+        if random.random() < 0.5:
+            return create_level_2_placeholder(problem_data, ground_truth)
+        else:
+            return create_level_3_placeholder(problem_data, ground_truth)
     elif level == 3:
-        return create_level_3_placeholder(problem_data, ground_truth)
-    elif level == 4:
+        # Old level 4
         return create_level_4_placeholder(problem_data, ground_truth)
-    elif level == 5:
-        return create_level_5_placeholder(problem_data, ground_truth)
-    elif level == 6:
-        return create_level_6_placeholder(problem_data, ground_truth)
+    elif level == 4:
+        # Fused level: 50% old level 5, 50% old level 6
+        if random.random() < 0.5:
+            return create_level_5_placeholder(problem_data, ground_truth)
+        else:
+            return create_level_6_placeholder(problem_data, ground_truth)
     else:
-        raise ValueError(f"Invalid level: {level}. Must be between 1 and 6.")
+        raise ValueError(f"Invalid level: {level}. Must be between 1 and 4.")
