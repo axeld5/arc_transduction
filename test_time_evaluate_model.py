@@ -513,7 +513,7 @@ def batch_test_time_evaluate(
 if __name__ == "__main__":
     # Example: Test-time RL on a single problem (Level 3 = 3x3 zeros placeholder)
     result = test_time_evaluate(
-        base_model="qwen2.5_3b_transduction_sft/merged",
+        base_model="Qwen/Qwen2.5-3B-Instruct",
         eval_data_path="generated_data/eval_data.json",
         output_dir="test_time_rl_output",
         problem_idx=0,
@@ -524,7 +524,7 @@ if __name__ == "__main__":
         dense_steps=50,  # Phase 1: Dense reward
         sparse_steps=150,  # Phase 2: Sparse reward
         inference_mode="standard",  # Options: "standard", "deep_dive", "augmented_voting", "augmented_deep_dive"
-        temperature=0.7,
+        temperature=1,
         attempts_per_problem=5,
     )
     
