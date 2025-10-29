@@ -2,10 +2,15 @@
 Test-time RL evaluation for ARC transduction problems.
 
 This module implements test-time adaptation:
-1. Takes a problem from evaluation set
-2. Creates augmented training data with placeholders (all 4 levels)
-3. Performs RL training with dense + sparse reward
-4. Evaluates the adapted model using vLLM with various strategies
+1. Loads a level 3 problem (3x3 zeros placeholder) from evaluation set
+2. Creates augmented training data with ALL placeholder levels (0-4)
+   - Parses the problem text back to structured format
+   - Generates multiple augmentations with placeholders at all difficulty levels
+3. Performs RL training with dense + sparse reward on the diverse training data
+4. Evaluates the adapted model on the ORIGINAL level 3 problem using vLLM
+
+Training: ALL levels (0-4) with augmentations
+Evaluation: ONLY the original level 3 problem
 """
 
 import json
@@ -22,7 +27,10 @@ from datasets import Dataset
 
 from create_train_data import (
     create_training_examples_for_problem_eval,
+    augment_problem,
+    from_data_to_problem,
 )
+from placeholder_creation import create_placeholder
 from reward_functions import reward_function_diff
 from evaluate_model import evaluate_model_vllm
 from transduction_rl_unigpu import convert_to_rl_format
@@ -67,69 +75,178 @@ def load_eval_problem(
     return eval_data[problem_idx]
 
 
+def parse_problem_text(problem_text: str, answer_text: str) -> Dict[str, Any]:
+    """
+    Parse formatted problem text back into structured problem data.
+    
+    Args:
+        problem_text: Formatted problem text with training examples and test input
+        answer_text: The ground truth answer
+        
+    Returns:
+        Structured problem data with train/test examples
+    """
+    lines = problem_text.strip().split('\n')
+    problem_data = {'train': [], 'test': []}
+    
+    current_section = None
+    current_grid = []
+    current_io = None  # 'input' or 'output'
+    current_example = {}
+    
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('Identify'):
+            continue
+            
+        if line == "Training Examples:":
+            current_section = 'train'
+        elif line == "Test Case:":
+            current_section = 'test'
+        elif line.startswith("Example "):
+            if current_example:
+                problem_data['train'].append(current_example)
+            current_example = {}
+        elif line == "Input:":
+            current_io = 'input'
+            current_grid = []
+        elif line == "Output:" or line == "Output Placeholder:":
+            if current_io == 'input' and current_grid:
+                current_example['input'] = current_grid
+            current_io = 'output'
+            current_grid = []
+        elif current_io and line and not line.startswith("Example"):
+            # Parse grid row
+            try:
+                row = [int(x) for x in line.split()]
+                if row:  # Only add non-empty rows
+                    current_grid.append(row)
+            except ValueError:
+                pass
+    
+    # Finalize last example
+    if current_section == 'train' and current_io == 'output' and current_grid:
+        current_example['output'] = current_grid
+        problem_data['train'].append(current_example)
+    elif current_section == 'test' and current_io == 'input' and current_grid:
+        # Parse the answer for test output
+        answer_lines = answer_text.strip().split('\n')
+        answer_grid = []
+        for line in answer_lines:
+            try:
+                row = [int(x) for x in line.split()]
+                if row:
+                    answer_grid.append(row)
+            except ValueError:
+                pass
+        
+        problem_data['test'].append({
+            'input': current_grid,
+            'output': answer_grid
+        })
+    
+    return problem_data
+
+
 def create_test_time_training_data(
     problem: Dict[str, Any],
-    num_repetitions: int = 50,
-    include_all_levels: bool = True,
+    num_augmentations: int = 10,
+    placeholders_per_level: int = 5,
 ) -> List[Dict[str, Any]]:
     """
     Create training data from a single problem for test-time RL.
     
-    For test-time RL, we use the problem as-is (already formatted text) and create
-    multiple repetitions to give the model sufficient training signal. We include
-    examples from all difficulty levels (1-4) to provide comprehensive training.
+    Generates ALL placeholder levels (0-4) with augmentations to give the model
+    diverse training signal. This is similar to regular training data generation
+    but applied to a single problem.
     
     Args:
-        problem: Problem data with 'problem' and 'answer' keys
-        num_repetitions: Number of times to repeat the problem
-        include_all_levels: If True, tag examples with different levels for curriculum
+        problem: Problem data with 'problem', 'answer', and 'metadata' keys
+        num_augmentations: Number of augmented versions to create
+        placeholders_per_level: Number of placeholders per level (1-4)
         
     Returns:
-        List of training examples
+        List of training examples with all placeholder levels
     """
-    # Extract problem metadata if available
+    # Extract problem metadata
     metadata = problem.get('metadata', {})
     problem_name = metadata.get('problem_name', 'test_problem')
     concept = metadata.get('concept', 'unknown')
-    original_level = metadata.get('level', 0)
+    
+    # Parse the formatted text back into structured data
+    problem_data = parse_problem_text(problem['problem'], problem['answer'])
     
     training_examples = []
     
-    if include_all_levels:
-        # Create examples for each level (1-4) to simulate curriculum
-        # This helps the model learn progressively
-        levels = [1, 2, 3, 4]
-        repetitions_per_level = num_repetitions // len(levels)
+    # Create augmented versions with all placeholder levels
+    for aug_idx in range(num_augmentations):
+        seed = hash(f"{problem_name}_testtime_{aug_idx}") % (2**32)
+        random.seed(seed)
+        augmented_data = augment_problem(problem_data, seed=seed)
+        augmented_ground_truth = augmented_data['test'][0]['output']
         
-        for level in levels:
-            for rep_idx in range(repetitions_per_level):
+        # Level 0: Unmodified (ground truth in test output)
+        unmodified_problem = {
+            'train': augmented_data['train'],
+            'test': [{
+                'input': augmented_data['test'][0]['input'],
+                'output': augmented_ground_truth
+            }]
+        }
+        
+        formatted_unmodified = from_data_to_problem(unmodified_problem, include_test_output=True)
+        answer = ""
+        for row in augmented_ground_truth:
+            answer += " ".join(map(str, row)) + "\n"
+        answer = answer.strip()
+        
+        training_examples.append({
+            'problem': formatted_unmodified['problem'],
+            'answer': answer,
+            'metadata': {
+                'concept': concept,
+                'problem_name': problem_name,
+                'method': 'test_time',
+                'augmentation_idx': aug_idx,
+                'augmentation_seed': seed,
+                'level': 0,
+                'placeholder_idx': -1,
+                'placeholder_seed': -1
+            }
+        })
+        
+        # Levels 1-4: Create placeholders
+        for level in range(1, 5):
+            for placeholder_idx in range(placeholders_per_level):
+                placeholder_seed = hash(f"{problem_name}_testtime_{aug_idx}_{level}_{placeholder_idx}") % (2**32)
+                random.seed(placeholder_seed)
+                
+                placeholder = create_placeholder(augmented_data, augmented_ground_truth, level=level)
+                
+                problem_with_placeholder = {
+                    'train': augmented_data['train'],
+                    'test': [{
+                        'input': augmented_data['test'][0]['input'],
+                        'output': placeholder
+                    }]
+                }
+                
+                formatted = from_data_to_problem(problem_with_placeholder, include_test_output=True)
+                
                 training_examples.append({
-                    'problem': problem['problem'],
-                    'answer': problem['answer'],
+                    'problem': formatted['problem'],
+                    'answer': answer,  # Always ground truth
                     'metadata': {
                         'concept': concept,
                         'problem_name': problem_name,
                         'method': 'test_time',
-                        'original_level': original_level,
-                        'level': level,  # Assigned level for training
-                        'repetition_idx': rep_idx,
+                        'augmentation_idx': aug_idx,
+                        'augmentation_seed': seed,
+                        'level': level,
+                        'placeholder_idx': placeholder_idx,
+                        'placeholder_seed': placeholder_seed
                     }
                 })
-    else:
-        # Simple repetition without level assignment
-        for rep_idx in range(num_repetitions):
-            training_examples.append({
-                'problem': problem['problem'],
-                'answer': problem['answer'],
-                'metadata': {
-                    'concept': concept,
-                    'problem_name': problem_name,
-                    'method': 'test_time',
-                    'original_level': original_level,
-                    'level': original_level,
-                    'repetition_idx': rep_idx,
-                }
-            })
     
     return training_examples
 
@@ -352,8 +469,8 @@ def test_time_evaluate(
     output_dir: str = "test_time_rl",
     problem_idx: int = 0,
     level_filter: int = 3,
-    num_repetitions: int = 200,
-    include_all_levels: bool = True,
+    num_augmentations: int = 10,
+    placeholders_per_level: int = 5,
     use_system_prompt: bool = True,
     dense_steps: int = 50,
     sparse_steps: int = 150,
@@ -370,8 +487,8 @@ def test_time_evaluate(
         output_dir: Base directory for saving outputs
         problem_idx: Index of problem to evaluate (within filtered level)
         level_filter: Only evaluate problems of this level (default: 3 for 3x3 zeros)
-        num_repetitions: Number of repetitions of the problem for training
-        include_all_levels: Whether to distribute repetitions across levels 1-4
+        num_augmentations: Number of augmented versions to create for training
+        placeholders_per_level: Number of placeholders per level (1-4) for training
         use_system_prompt: Whether to use system prompt
         dense_steps: Steps for dense reward phase
         sparse_steps: Steps for sparse reward phase
@@ -390,28 +507,34 @@ def test_time_evaluate(
     print(f"Level filter: {level_filter} (3x3 zeros placeholder)")
     print(f"Problem index: {problem_idx} (within level {level_filter})")
     print(f"Inference mode: {inference_mode}")
-    print(f"Repetitions: {num_repetitions}")
-    print(f"Include all levels: {include_all_levels}")
+    print(f"Augmentations: {num_augmentations}")
+    print(f"Placeholders per level: {placeholders_per_level}")
+    print(f"Total training examples: {num_augmentations * (1 + 4 * placeholders_per_level)}")
     print(f"Dense steps: {dense_steps}")
     print(f"Sparse steps: {sparse_steps}")
     print(f"{'='*80}\n")
     
-    # Step 1: Load the problem (filtered by level)
-    print(f"[Step 1] Loading problem {problem_idx} from level {level_filter}...")
+    # Step 1: Load the problem (filtered by level 3)
+    print(f"[Step 1] Loading level {level_filter} problem {problem_idx}...")
     problem = load_eval_problem(eval_data_path, problem_idx, level_filter=level_filter)
     print(f"Problem metadata: {problem.get('metadata', {})}")
     
-    # Step 2: Create training data
-    print(f"\n[Step 2] Creating training data...")
+    # Step 2: Create training data with ALL placeholder levels (0-4)
+    print(f"\n[Step 2] Creating training data with ALL placeholder levels (0-4)...")
     training_data = create_test_time_training_data(
         problem=problem,
-        num_repetitions=num_repetitions,
-        include_all_levels=include_all_levels,
+        num_augmentations=num_augmentations,
+        placeholders_per_level=placeholders_per_level,
     )
     print(f"Created {len(training_data)} training examples")
+    level_counts = {}
+    for ex in training_data:
+        lvl = ex['metadata']['level']
+        level_counts[lvl] = level_counts.get(lvl, 0) + 1
+    print(f"Level distribution: {level_counts}")
     
-    # Step 3: Perform test-time RL
-    print(f"\n[Step 3] Performing test-time RL...")
+    # Step 3: Perform test-time RL on ALL placeholder levels
+    print(f"\n[Step 3] Performing test-time RL on all placeholder levels...")
     problem_output_dir = os.path.join(output_dir, f"problem_{problem_idx}")
     adapter_path = run_test_time_rl(
         base_model=base_model,
@@ -422,11 +545,11 @@ def test_time_evaluate(
         sparse_steps=sparse_steps,
     )
     
-    # Step 4: Create temporary eval file with just this problem
-    print(f"\n[Step 4] Evaluating adapted model...")
+    # Step 4: Create temporary eval file with ORIGINAL level 3 problem
+    print(f"\n[Step 4] Evaluating adapted model on ORIGINAL level {level_filter} problem...")
     temp_eval_path = os.path.join(output_dir, f"temp_eval_problem_{problem_idx}.json")
     with open(temp_eval_path, 'w') as f:
-        json.dump([problem], f, indent=2)
+        json.dump([problem], f, indent=2)  # Use original level 3 problem for evaluation
     
     # Step 5: Evaluate using vLLM with the adapter
     results = evaluate_model_vllm(
@@ -539,8 +662,9 @@ if __name__ == "__main__":
         output_dir="test_time_rl_output",
         problem_idx=0,
         level_filter=3,  # Only evaluate Level 3 (3x3 zeros placeholder)
-        num_repetitions=200,  # Total repetitions of the problem
-        include_all_levels=True,  # Distribute across levels 1-4
+        num_augmentations=30,  # Number of augmented versions for training
+        placeholders_per_level=5,  # Placeholders per level (1-4) for training
+        # Total training examples: 30 * (1 + 5*4) = 630 examples across all levels
         use_system_prompt=True,
         dense_steps=50,  # Phase 1: Dense reward
         sparse_steps=150,  # Phase 2: Sparse reward
