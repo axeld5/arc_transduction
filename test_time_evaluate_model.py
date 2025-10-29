@@ -419,7 +419,7 @@ def run_test_time_sft(
     
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
         args=training_args,
     )
