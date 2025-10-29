@@ -1,18 +1,21 @@
 """
-Test-time RL evaluation for ARC transduction problems.
+Test-time adaptation evaluation for ARC transduction problems.
 
-This module implements test-time adaptation:
+This module implements test-time adaptation using SFT or RL:
 1. Loads a level 3 problem (3x3 zeros placeholder) from evaluation set
 2. Creates augmented training data with ALL placeholder levels (0-4) using leave-one-out:
    - Parses the problem text back to structured format
    - Uses leave-one-out on training examples (holds out one, trains on rest)
    - Generates multiple augmentations with placeholders at all difficulty levels
    - We don't use the test case since we don't have access to its output
-3. Performs RL training with dense + sparse reward on the diverse training data
+3. Performs test-time adaptation:
+   - SFT: Supervised finetuning on the diverse training data (faster, simpler)
+   - RL: Reinforcement learning with dense + sparse reward (more complex)
 4. Evaluates the adapted model on the ORIGINAL level 3 problem using vLLM
 
 Training: Leave-one-out with ALL levels (0-4) and augmentations
 Evaluation: ONLY the original level 3 problem with test case
+Methods: SFT (supervised finetuning) or RL (reinforcement learning)
 """
 
 import json
@@ -23,9 +26,10 @@ import gc
 import torch
 from dotenv import load_dotenv
 from huggingface_hub import login
-from trl import GRPOConfig, GRPOTrainer
+from trl import GRPOConfig, GRPOTrainer, SFTConfig, SFTTrainer
 from unsloth import FastLanguageModel
 from datasets import Dataset
+from unsloth.chat_templates import get_chat_template
 
 from create_train_data import (
     create_training_examples_for_problem_eval,
@@ -295,6 +299,153 @@ def create_test_time_training_data(
     return training_examples
 
 
+def run_test_time_sft(
+    base_model: str,
+    training_data: List[Dict[str, Any]],
+    output_dir: str,
+    use_system_prompt: bool = True,
+    num_steps: int = 100,
+) -> str:
+    """
+    Perform test-time SFT (supervised finetuning) on a single problem.
+    
+    Args:
+        base_model: Path to base model
+        training_data: Training examples created from the problem
+        output_dir: Directory to save adapter
+        use_system_prompt: Whether to use system prompt
+        num_steps: Training steps
+        
+    Returns:
+        Path to the trained adapter
+    """
+    print(f"\n{'='*60}")
+    print(f"Test-Time SFT Training")
+    print(f"Training samples: {len(training_data)}")
+    print(f"Training steps: {num_steps}")
+    print(f"Using system prompt: {use_system_prompt}")
+    print(f"{'='*60}")
+    
+    max_seq_length = 16000
+    lora_rank = 256
+    
+    # Load model
+    try:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=base_model,
+            max_seq_length=max_seq_length,
+            load_in_4bit=False,
+            max_lora_rank=lora_rank,
+            fast_inference=False,
+        )
+    except Exception as e:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name="qwen2.5_3b_transduction_sft/final",
+            max_seq_length=max_seq_length,
+            load_in_4bit=False,
+            max_lora_rank=lora_rank,
+            fast_inference=False,
+        )
+        model.save_pretrained_merged(
+            "qwen2.5_3b_transduction_sft/merged",
+            tokenizer,
+            save_method="merged_16bit",
+        )
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=base_model,
+            max_seq_length=max_seq_length,
+            load_in_4bit=False,
+            max_lora_rank=lora_rank,
+            fast_inference=False,
+        )
+    
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=1,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                       "gate_proj", "up_proj", "down_proj"],
+        lora_dropout=0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+    )
+    model.get_input_embeddings().requires_grad_(True)
+    
+    # Set up chat template
+    tokenizer = get_chat_template(
+        tokenizer,
+        chat_template="qwen-2.5",
+    )
+    
+    # Convert to SFT format
+    def formatting_prompts_func(examples):
+        texts = []
+        for problem, answer in zip(examples['problem'], examples['answer']):
+            if use_system_prompt:
+                messages = [
+                    {"role": "system", "content": "You are an expert at solving ARC (Abstraction and Reasoning Corpus) problems. Given input-output grid examples, identify the transformation pattern and apply it to solve new test cases."},
+                    {"role": "user", "content": problem},
+                    {"role": "assistant", "content": answer}
+                ]
+            else:
+                messages = [
+                    {"role": "user", "content": problem},
+                    {"role": "assistant", "content": answer}
+                ]
+            texts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False))
+        return {"text": texts}
+    
+    # Prepare dataset
+    dataset = Dataset.from_list(training_data)
+    dataset = dataset.map(formatting_prompts_func, batched=True)
+    
+    print(f"Dataset size: {len(dataset)}")
+    
+    # Training
+    training_args = SFTConfig(
+        output_dir=output_dir,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+        max_steps=num_steps,
+        learning_rate=1e-5,
+        lr_scheduler_type="cosine",
+        logging_steps=10,
+        save_steps=num_steps,  # Save at end
+        optim="paged_adamw_8bit",
+        warmup_steps=10,
+        report_to="tensorboard",
+        max_seq_length=max_seq_length,
+        dataset_text_field="text",
+        packing=False,
+    )
+    
+    trainer = SFTTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset,
+        args=training_args,
+    )
+    
+    trainer.train()
+    
+    # Save adapter
+    final_adapter_path = os.path.join(output_dir, "final")
+    trainer.save_model(final_adapter_path)
+    tokenizer.save_pretrained(final_adapter_path)
+    
+    # Cleanup
+    del trainer
+    del model
+    del tokenizer
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    
+    print(f"SFT Complete. Adapter saved to: {final_adapter_path}")
+    
+    return final_adapter_path
+
+
 def run_test_time_rl(
     base_model: str,
     training_data: List[Dict[str, Any]],
@@ -510,12 +661,14 @@ def run_test_time_rl(
 def test_time_evaluate(
     base_model: str,
     eval_data_path: str,
-    output_dir: str = "test_time_rl",
+    output_dir: str = "test_time_adaptation",
     problem_idx: int = 0,
     level_filter: int = 3,
     num_augmentations: int = 10,
     placeholders_per_level: int = 5,
     use_system_prompt: bool = True,
+    method: str = "sft",
+    sft_steps: int = 100,
     dense_steps: int = 50,
     sparse_steps: int = 150,
     inference_mode: str = "standard",
@@ -523,7 +676,7 @@ def test_time_evaluate(
     attempts_per_problem: int = 5,
 ) -> Dict[str, Any]:
     """
-    Perform test-time RL evaluation on a single problem.
+    Perform test-time adaptation evaluation on a single problem.
     
     Args:
         base_model: Path to base model
@@ -534,8 +687,10 @@ def test_time_evaluate(
         num_augmentations: Number of augmented versions to create for training
         placeholders_per_level: Number of placeholders per level (1-4) for training
         use_system_prompt: Whether to use system prompt
-        dense_steps: Steps for dense reward phase
-        sparse_steps: Steps for sparse reward phase
+        method: "sft" for supervised finetuning or "rl" for reinforcement learning
+        sft_steps: Steps for SFT training (if method="sft")
+        dense_steps: Steps for dense reward phase (if method="rl")
+        sparse_steps: Steps for sparse reward phase (if method="rl")
         inference_mode: Evaluation strategy ("standard", "deep_dive", "augmented_voting", "augmented_deep_dive")
         temperature: Sampling temperature
         attempts_per_problem: Number of generation attempts
@@ -544,18 +699,22 @@ def test_time_evaluate(
         Evaluation results dictionary
     """
     print(f"\n{'='*80}")
-    print(f"TEST-TIME RL EVALUATION")
+    print(f"TEST-TIME {method.upper()} EVALUATION")
     print(f"{'='*80}")
     print(f"Base model: {base_model}")
     print(f"Eval data: {eval_data_path}")
     print(f"Level filter: {level_filter} (3x3 zeros placeholder)")
     print(f"Problem index: {problem_idx} (within level {level_filter})")
+    print(f"Method: {method.upper()}")
     print(f"Inference mode: {inference_mode}")
     print(f"Augmentations: {num_augmentations}")
     print(f"Placeholders per level: {placeholders_per_level}")
     print(f"Total training examples: {num_augmentations * (1 + 4 * placeholders_per_level)}")
-    print(f"Dense steps: {dense_steps}")
-    print(f"Sparse steps: {sparse_steps}")
+    if method == "sft":
+        print(f"SFT steps: {sft_steps}")
+    elif method == "rl":
+        print(f"Dense steps: {dense_steps}")
+        print(f"Sparse steps: {sparse_steps}")
     print(f"{'='*80}\n")
     
     # Step 1: Load the problem (filtered by level 3)
@@ -578,17 +737,29 @@ def test_time_evaluate(
         level_counts[lvl] = level_counts.get(lvl, 0) + 1
     print(f"Level distribution: {level_counts}")
     
-    # Step 3: Perform test-time RL on ALL placeholder levels
-    print(f"\n[Step 3] Performing test-time RL on all placeholder levels...")
+    # Step 3: Perform test-time adaptation (SFT or RL) on ALL placeholder levels
+    print(f"\n[Step 3] Performing test-time {method.upper()} on all placeholder levels...")
     problem_output_dir = os.path.join(output_dir, f"problem_{problem_idx}")
-    adapter_path = run_test_time_rl(
-        base_model=base_model,
-        training_data=training_data,
-        output_dir=problem_output_dir,
-        use_system_prompt=use_system_prompt,
-        dense_steps=dense_steps,
-        sparse_steps=sparse_steps,
-    )
+    
+    if method == "sft":
+        adapter_path = run_test_time_sft(
+            base_model=base_model,
+            training_data=training_data,
+            output_dir=problem_output_dir,
+            use_system_prompt=use_system_prompt,
+            num_steps=sft_steps,
+        )
+    elif method == "rl":
+        adapter_path = run_test_time_rl(
+            base_model=base_model,
+            training_data=training_data,
+            output_dir=problem_output_dir,
+            use_system_prompt=use_system_prompt,
+            dense_steps=dense_steps,
+            sparse_steps=sparse_steps,
+        )
+    else:
+        raise ValueError(f"Invalid method: {method}. Must be 'sft' or 'rl'")
     
     # Step 4: Create temporary eval file with ORIGINAL level 3 problem
     print(f"\n[Step 4] Evaluating adapted model on ORIGINAL level {level_filter} problem...")
@@ -614,14 +785,16 @@ def test_time_evaluate(
     os.remove(temp_eval_path)
     
     print(f"\n{'='*80}")
-    print(f"TEST-TIME RL EVALUATION COMPLETE")
+    print(f"TEST-TIME {method.upper()} EVALUATION COMPLETE")
     print(f"{'='*80}")
+    print(f"Method: {method.upper()}")
     print(f"Adapter path: {adapter_path}")
     print(f"Results: {results}")
     print(f"{'='*80}\n")
     
     return {
         'problem_idx': problem_idx,
+        'method': method,
         'adapter_path': adapter_path,
         'results': results,
         'problem_metadata': problem.get('metadata', {}),
@@ -631,14 +804,15 @@ def test_time_evaluate(
 def batch_test_time_evaluate(
     base_model: str,
     eval_data_path: str,
-    output_dir: str = "test_time_rl_batch",
+    output_dir: str = "test_time_batch",
     level_filter: int = 3,
     num_problems: int = 10,
     start_idx: int = 0,
+    method: str = "sft",
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Perform test-time RL evaluation on multiple problems.
+    Perform test-time adaptation evaluation on multiple problems.
     
     Args:
         base_model: Path to base model
@@ -647,15 +821,17 @@ def batch_test_time_evaluate(
         level_filter: Only evaluate problems of this level (default: 3)
         num_problems: Number of problems to evaluate
         start_idx: Starting problem index (within filtered level)
+        method: "sft" for supervised finetuning or "rl" for reinforcement learning
         **kwargs: Additional arguments passed to test_time_evaluate
         
     Returns:
         Dictionary with results for all problems
     """
     print(f"\n{'='*80}")
-    print(f"BATCH TEST-TIME RL EVALUATION")
+    print(f"BATCH TEST-TIME {method.upper()} EVALUATION")
     print(f"{'='*80}")
     print(f"Base model: {base_model}")
+    print(f"Method: {method.upper()}")
     print(f"Level filter: {level_filter}")
     print(f"Evaluating {num_problems} problems starting from index {start_idx}")
     print(f"{'='*80}\n")
@@ -675,6 +851,7 @@ def batch_test_time_evaluate(
                 output_dir=output_dir,
                 problem_idx=problem_idx,
                 level_filter=level_filter,
+                method=method,
                 **kwargs
             )
             all_results[f"problem_{problem_idx}"] = result
@@ -700,19 +877,24 @@ def batch_test_time_evaluate(
 
 
 if __name__ == "__main__":
-    # Example: Test-time RL on a single problem (Level 3 = 3x3 zeros placeholder)
+    # Example: Test-time adaptation on a single problem (Level 3 = 3x3 zeros placeholder)
+    # Training: Uses leave-one-out on training examples with all placeholder levels (0-4)
+    # Evaluation: Tests on the original level 3 problem with test case
+    
+    # Method 1: Supervised Finetuning (SFT) - Faster and simpler
     result = test_time_evaluate(
         base_model="qwen2.5_3b_transduction_sft/merged",
         eval_data_path="generated_data/eval_data.json",
-        output_dir="test_time_rl_output",
+        output_dir="test_time_sft_output",
         problem_idx=0,
         level_filter=3,  # Only evaluate Level 3 (3x3 zeros placeholder)
-        num_augmentations=30,  # Number of augmented versions for training
+        num_augmentations=30,  # Number of augmented versions for leave-one-out training
         placeholders_per_level=5,  # Placeholders per level (1-4) for training
         # Total training examples: 30 * (1 + 5*4) = 630 examples across all levels
+        # These are generated from leave-one-out on training examples
         use_system_prompt=True,
-        dense_steps=50,  # Phase 1: Dense reward
-        sparse_steps=150,  # Phase 2: Sparse reward
+        method="sft",  # Use supervised finetuning
+        sft_steps=100,  # Number of training steps
         inference_mode="standard",  # Options: "standard", "deep_dive", "augmented_voting", "augmented_deep_dive"
         temperature=1,
         attempts_per_problem=5,
@@ -720,4 +902,23 @@ if __name__ == "__main__":
     
     print("\nFinal Result:")
     print(json.dumps(result, indent=2))
+    
+    # Method 2: Reinforcement Learning (RL) - More complex but potentially better
+    # Uncomment to use RL instead:
+    # result = test_time_evaluate(
+    #     base_model="qwen2.5_3b_transduction_sft/merged",
+    #     eval_data_path="generated_data/eval_data.json",
+    #     output_dir="test_time_rl_output",
+    #     problem_idx=0,
+    #     level_filter=3,
+    #     num_augmentations=30,
+    #     placeholders_per_level=5,
+    #     use_system_prompt=True,
+    #     method="rl",  # Use reinforcement learning
+    #     dense_steps=50,  # Phase 1: Dense reward
+    #     sparse_steps=150,  # Phase 2: Sparse reward
+    #     inference_mode="standard",
+    #     temperature=1,
+    #     attempts_per_problem=5,
+    # )
 
