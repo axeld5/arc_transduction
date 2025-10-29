@@ -101,22 +101,44 @@ def parse_problem_text(problem_text: str, answer_text: str) -> Dict[str, Any]:
             
         if line == "Training Examples:":
             current_section = 'train'
+            continue
         elif line == "Test Case:":
+            # Save any pending training example before switching to test
+            if current_section == 'train' and current_example and current_io == 'output' and current_grid:
+                current_example['output'] = current_grid
+                problem_data['train'].append(current_example)
+                current_example = {}
+                current_grid = []
             current_section = 'test'
+            current_io = None
+            continue
         elif line.startswith("Example "):
-            if current_example:
+            # Save previous example if exists
+            if current_example and 'input' in current_example and current_io == 'output' and current_grid:
+                current_example['output'] = current_grid
                 problem_data['train'].append(current_example)
             current_example = {}
+            current_grid = []
+            current_io = None
+            continue
         elif line == "Input:":
+            # Save output if we were collecting one
+            if current_io == 'output' and current_grid and 'input' in current_example:
+                current_example['output'] = current_grid
+                problem_data['train'].append(current_example)
+                current_example = {}
             current_io = 'input'
             current_grid = []
+            continue
         elif line == "Output:" or line == "Output Placeholder:":
             if current_io == 'input' and current_grid:
                 current_example['input'] = current_grid
             current_io = 'output'
             current_grid = []
-        elif current_io and line and not line.startswith("Example"):
-            # Parse grid row
+            continue
+        
+        # Parse grid row
+        if current_io and line:
             try:
                 row = [int(x) for x in line.split()]
                 if row:  # Only add non-empty rows
@@ -124,11 +146,14 @@ def parse_problem_text(problem_text: str, answer_text: str) -> Dict[str, Any]:
             except ValueError:
                 pass
     
-    # Finalize last example
-    if current_section == 'train' and current_io == 'output' and current_grid:
+    # Finalize last training example if exists
+    if current_section == 'train' and current_io == 'output' and current_grid and 'input' in current_example:
         current_example['output'] = current_grid
         problem_data['train'].append(current_example)
-    elif current_section == 'test' and current_io == 'input' and current_grid:
+    
+    # Parse test case
+    if current_section == 'test' and current_grid:
+        # current_grid should be the test input
         # Parse the answer for test output
         answer_lines = answer_text.strip().split('\n')
         answer_grid = []
