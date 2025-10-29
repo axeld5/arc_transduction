@@ -433,6 +433,11 @@ def run_test_time_sft(
     
     print(f"Dataset size: {len(dataset)}")
     
+    # Ensure tokenizer has proper EOS token
+    if tokenizer.eos_token is None or tokenizer.eos_token == '<EOS_TOKEN>':
+        tokenizer.eos_token = tokenizer.decode([tokenizer.eos_token_id]) if tokenizer.eos_token_id is not None else '<|im_end|>'
+        print(f"Set tokenizer.eos_token to: {tokenizer.eos_token}")
+    
     # Training
     training_args = SFTConfig(
         output_dir=output_dir,
@@ -448,7 +453,9 @@ def run_test_time_sft(
         warmup_steps=10,
         report_to="tensorboard",
         remove_unused_columns=False,
-        packing=False,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        max_grad_norm=None,
     )
     
     trainer = UnslothFixedTrainer(
