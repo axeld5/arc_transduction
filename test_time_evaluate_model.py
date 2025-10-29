@@ -413,7 +413,6 @@ def run_test_time_sft(
         optim="paged_adamw_8bit",
         warmup_steps=10,
         report_to="tensorboard",
-        max_seq_length=max_seq_length,
         dataset_text_field="text",
         packing=False,
     )
