@@ -563,8 +563,9 @@ def test_time_evaluate(
     problem = load_eval_problem(eval_data_path, problem_idx, level_filter=level_filter)
     print(f"Problem metadata: {problem.get('metadata', {})}")
     
-    # Step 2: Create training data with ALL placeholder levels (0-4)
-    print(f"\n[Step 2] Creating training data with ALL placeholder levels (0-4)...")
+    # Step 2: Create training data with ALL placeholder levels (0-4) using leave-one-out
+    print(f"\n[Step 2] Creating training data with ALL placeholder levels (0-4) using leave-one-out...")
+    print(f"  (Holding out one training example, training on the rest)")
     training_data = create_test_time_training_data(
         problem=problem,
         num_augmentations=num_augmentations,
