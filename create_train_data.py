@@ -275,6 +275,124 @@ def create_training_examples_for_problem_leaveoneout(
     return training_examples
 
 
+def create_training_examples_for_problem_train(
+    problem_name: str,
+    problem_data: Dict[str, Any],
+    concept: str,
+    num_augmentations: int = 30,
+    placeholders_per_augmentation: int = 20,
+    data_dir: str = "."
+) -> List[Dict[str, Any]]:
+    """
+    Create training examples using actual test examples with ALL placeholder levels.
+    
+    Uses the actual test cases provided in the problem data and creates
+    all levels (0-4) with multiple placeholders per level.
+    
+    Args:
+        problem_name: Name of the problem (e.g., "AboveBelow1")
+        problem_data: Original problem data
+        concept: Concept category (e.g., "AboveBelow")
+        num_augmentations: Number of augmented versions to create
+        placeholders_per_augmentation: Number of placeholders per augmented version
+        data_dir: Root directory
+        
+    Returns:
+        List of training examples with metadata (all levels 0-4 with placeholders)
+    """
+    training_examples = []
+    
+    # Get the ground truth from the first test case
+    if not problem_data.get('test') or len(problem_data['test']) == 0:
+        print(f"Warning: {problem_name} has no test cases, skipping...")
+        return training_examples
+    
+    ground_truth = problem_data['test'][0]['output']
+    
+    # Create augmented versions
+    for aug_idx in range(num_augmentations):
+        seed = hash(f"{problem_name}_train_{aug_idx}") % (2**32)
+        augmented_data = augment_problem(problem_data, seed=seed)
+        augmented_ground_truth = augmented_data['test'][0]['output']
+        
+        # First, save the unmodified problem (no placeholder, just ground truth)
+        unmodified_problem = {
+            'train': augmented_data['train'],
+            'test': [{
+                'input': augmented_data['test'][0]['input'],
+                'output': augmented_ground_truth
+            }]
+        }
+        
+        formatted_unmodified = from_data_to_problem(unmodified_problem, include_test_output=True)
+        answer = ""
+        for row in augmented_ground_truth:
+            answer += " ".join(map(str, row)) + "\n"
+        answer = answer.strip()
+        
+        training_examples.append({
+            'problem': formatted_unmodified['problem'],
+            'answer': answer,
+            'metadata': {
+                'concept': concept,
+                'problem_name': problem_name,
+                'method': 'train',
+                'augmentation_idx': aug_idx,
+                'augmentation_seed': seed,
+                'level': 0,  # 0 means unmodified/ground truth
+                'placeholder_idx': -1,
+                'placeholder_seed': -1
+            }
+        })
+        
+        # Create placeholders for each level (4 levels, placeholders_per_augmentation per level)
+        for level in range(1, 5):
+            for placeholder_idx in range(placeholders_per_augmentation):
+                # Create placeholder
+                placeholder_seed = hash(f"{problem_name}_train_{aug_idx}_{level}_{placeholder_idx}") % (2**32)
+                random.seed(placeholder_seed)
+                
+                placeholder = create_placeholder(augmented_data, augmented_ground_truth, level=level)
+                
+                # Create problem data with placeholder as output
+                problem_with_placeholder = {
+                    'train': augmented_data['train'],
+                    'test': [{
+                        'input': augmented_data['test'][0]['input'],
+                        'output': placeholder
+                    }]
+                }
+                
+                # Convert to formatted text (placeholder in problem)
+                formatted = from_data_to_problem(problem_with_placeholder, include_test_output=True)
+                
+                # Create the answer from the ground truth (NOT the placeholder)
+                answer = ""
+                for row in augmented_ground_truth:
+                    answer += " ".join(map(str, row)) + "\n"
+                answer = answer.strip()
+                
+                # Add metadata
+                training_example = {
+                    'problem': formatted['problem'],
+                    'answer': answer,  # Always the ground truth, not the placeholder
+                    'metadata': {
+                        'concept': concept,
+                        'problem_name': problem_name,
+                        'method': 'train',
+                        'augmentation_idx': aug_idx,
+                        'augmentation_seed': seed,
+                        'level': level,
+                        'placeholder_idx': placeholder_idx,
+                        'placeholder_seed': placeholder_seed
+                    }
+                }
+                
+                training_examples.append(training_example)
+    
+    return training_examples
+
+
 def create_training_examples_for_problem_eval(
     problem_name: str,
     problem_data: Dict[str, Any],
@@ -370,7 +488,9 @@ def create_training_data_for_concept(
     
     Args:
         concept: Concept category name (e.g., "AboveBelow")
-        method: "eval" (use test examples) or "leave_one_out" (use only train examples)
+        method: "train" (use test examples with all placeholder levels), 
+                "eval" (use test examples with only level 3), or 
+                "leave_one_out" (use only train examples with all placeholder levels)
         num_augmentations: Number of augmented versions per problem
         placeholders_per_augmentation: Number of placeholders per augmentation
         data_dir: Root directory
@@ -388,8 +508,10 @@ def create_training_data_for_concept(
         creation_func = create_training_examples_for_problem_leaveoneout
     elif method == "eval":
         creation_func = create_training_examples_for_problem_eval
+    elif method == "train":
+        creation_func = create_training_examples_for_problem_train
     else:
-        raise ValueError(f"Invalid method: {method}. Must be 'eval' or 'leave_one_out'")
+        raise ValueError(f"Invalid method: {method}. Must be 'train', 'eval', or 'leave_one_out'")
     
     # Get all problems for this concept
     problem_names = list_corpus_problems_by_concept(concept, data_dir=data_dir)
@@ -612,13 +734,13 @@ def create_training_data_leave_one_file_out(
             print(f"  Training problems: {len(train_problems)} - {train_problems}")
             print(f"  Evaluation problem: {eval_problems[0]}")
         
-        # Create training examples (using eval method on train problems)
+        # Create training examples (using train method with all placeholder levels)
         if verbose:
             print(f"\n  Creating TRAINING data from {len(train_problems)} problems...")
         
         train_examples = create_training_data_for_concept(
             concept=concept,
-            method="eval",  # Use eval method (actual test examples)
+            method="train",  # Use train method (actual test examples with all placeholder levels)
             num_augmentations=num_augmentations,
             placeholders_per_augmentation=placeholders_per_augmentation,
             data_dir=data_dir,
@@ -736,7 +858,8 @@ if __name__ == "__main__":
     print("    * Color permutations")
     print("    * Training example order shuffling (50% chance)")
     print("")
-    print("TRAINING DATA (leave-one-out):")
+    print("TRAINING DATA:")
+    print("  - Uses actual test examples with ALL placeholder levels")
     print("  - Level 0: Unmodified (ground truth in test output)")
     print("  - Levels 1-4: 5 placeholders per level")
     print("    * Level 1: Input/ground truth with random pixel modifications")
@@ -746,6 +869,7 @@ if __name__ == "__main__":
     print(f"  - Total per training problem: 30x(1 + 5x4) = {30*(1+5*4)} examples")
     print("")
     print("EVALUATION DATA:")
+    print("  - Uses actual test examples with ONLY level 3 placeholder")
     print("  - Level 3 ONLY: 3x3 zeros matrix as test output placeholder")
     print("  - All training examples shown normally")
     print(f"  - Total per eval problem: 30x1 = 30 examples")
