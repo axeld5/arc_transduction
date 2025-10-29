@@ -49,6 +49,27 @@ if os.getenv("HF_TOKEN"):
         pass
 
 
+class UnslothFixedTrainer(SFTTrainer):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        """Fixed compute_loss that handles Unsloth's view tensor issue"""
+        if self.label_smoother is not None and "labels" in inputs:
+            labels = inputs.pop("labels")
+        else:
+            labels = None
+        outputs = model(**inputs)
+        if labels is not None:
+            unwrapped_model = self.accelerator.unwrap_model(model)
+            if hasattr(unwrapped_model, '_get_name') and 'unsloth' in unwrapped_model._get_name().lower():
+                loss = self.label_smoother(outputs, labels, shift_labels=True)
+            else:
+                loss = self.label_smoother(outputs, labels)
+        else:
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+        if hasattr(loss, 'clone'):
+              loss = loss.clone()  # Converts view tensor to independent tensor
+        return (loss, outputs) if return_outputs else loss
+
+
 def load_optimized_prompt(prompt_path: str = "optimized_prompt.txt") -> str:
     """Load the optimized system prompt from file."""
     try:
@@ -426,10 +447,11 @@ def run_test_time_sft(
         optim="adamw_8bit",
         warmup_steps=10,
         report_to="tensorboard",
+        remove_unused_columns=False,
         packing=False,
     )
     
-    trainer = SFTTrainer(
+    trainer = UnslothFixedTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
