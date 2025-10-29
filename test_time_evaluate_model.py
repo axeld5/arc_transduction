@@ -184,6 +184,18 @@ def run_test_time_rl(
             max_lora_rank=lora_rank,
             fast_inference=False,
         )
+        model.save_pretrained_merged(
+            "qwen2.5_3b_transduction_sft/merged",
+            tokenizer,
+            save_method="merged_16bit",
+        )
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=base_model,
+            max_seq_length=max_seq_length,
+            load_in_4bit=False,
+            max_lora_rank=lora_rank,
+            fast_inference=False,
+        )
     
     model = FastLanguageModel.get_peft_model(
         model,
