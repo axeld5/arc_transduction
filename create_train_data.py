@@ -284,20 +284,21 @@ def create_training_examples_for_problem_eval(
     data_dir: str = "."
 ) -> List[Dict[str, Any]]:
     """
-    Create training examples using actual test examples (for evaluation/testing).
+    Create evaluation examples using actual test examples with ONLY level 3 placeholder.
     
-    Uses the actual test cases provided in the problem data.
+    Uses the actual test cases provided in the problem data, but ONLY creates
+    level 3 (3x3 zeros matrix) examples as the test output placeholder.
     
     Args:
         problem_name: Name of the problem (e.g., "AboveBelow1")
         problem_data: Original problem data
         concept: Concept category (e.g., "AboveBelow")
         num_augmentations: Number of augmented versions to create
-        placeholders_per_augmentation: Number of placeholders per augmented version
+        placeholders_per_augmentation: Number of placeholders per augmented version (IGNORED for eval)
         data_dir: Root directory
         
     Returns:
-        List of training examples with metadata
+        List of evaluation examples with metadata (only level 3 - 3x3 zeros placeholder)
     """
     training_examples = []
     
@@ -314,23 +315,31 @@ def create_training_examples_for_problem_eval(
         augmented_data = augment_problem(problem_data, seed=seed)
         augmented_ground_truth = augmented_data['test'][0]['output']
         
-        # First, save the unmodified problem (no placeholder, just ground truth)
-        unmodified_problem = {
+        # Create level 3 placeholder (3x3 zeros matrix)
+        placeholder_seed = hash(f"{problem_name}_eval_{aug_idx}_lv3") % (2**32)
+        random.seed(placeholder_seed)
+        placeholder = create_placeholder(augmented_data, augmented_ground_truth, level=3)
+        
+        # Create problem data with level 3 placeholder as output
+        problem_with_placeholder = {
             'train': augmented_data['train'],
             'test': [{
                 'input': augmented_data['test'][0]['input'],
-                'output': augmented_ground_truth
+                'output': placeholder  # Level 3: 3x3 zeros matrix
             }]
         }
         
-        formatted_unmodified = from_data_to_problem(unmodified_problem, include_test_output=True)
+        # Convert to formatted text (placeholder in problem)
+        formatted = from_data_to_problem(problem_with_placeholder, include_test_output=True)
+        
+        # Create the answer from the ground truth (NOT the placeholder)
         answer = ""
         for row in augmented_ground_truth:
             answer += " ".join(map(str, row)) + "\n"
         answer = answer.strip()
         
         training_examples.append({
-            'problem': formatted_unmodified['problem'],
+            'problem': formatted['problem'],
             'answer': answer,
             'metadata': {
                 'concept': concept,
@@ -338,56 +347,11 @@ def create_training_examples_for_problem_eval(
                 'method': 'eval',
                 'augmentation_idx': aug_idx,
                 'augmentation_seed': seed,
-                'level': 0,  # 0 means unmodified/ground truth
-                'placeholder_idx': -1,
-                'placeholder_seed': -1
+                'level': 3,  # ONLY level 3 for eval (3x3 zeros placeholder)
+                'placeholder_idx': 0,
+                'placeholder_seed': placeholder_seed
             }
         })
-        
-        # Create placeholders for each level (4 levels, placeholders_per_augmentation per level)
-        for level in range(1, 5):
-            for placeholder_idx in range(placeholders_per_augmentation):
-                # Create placeholder
-                placeholder_seed = hash(f"{problem_name}_eval_{aug_idx}_{level}_{placeholder_idx}") % (2**32)
-                random.seed(placeholder_seed)
-                
-                placeholder = create_placeholder(augmented_data, augmented_ground_truth, level=level)
-                
-                # Create problem data with placeholder as output
-                problem_with_placeholder = {
-                    'train': augmented_data['train'],
-                    'test': [{
-                        'input': augmented_data['test'][0]['input'],
-                        'output': placeholder
-                    }]
-                }
-                
-                # Convert to formatted text (placeholder in problem)
-                formatted = from_data_to_problem(problem_with_placeholder, include_test_output=True)
-                
-                # Create the answer from the ground truth (NOT the placeholder)
-                answer = ""
-                for row in augmented_ground_truth:
-                    answer += " ".join(map(str, row)) + "\n"
-                answer = answer.strip()
-                
-                # Add metadata
-                training_example = {
-                    'problem': formatted['problem'],
-                    'answer': answer,  # Always the ground truth, not the placeholder
-                    'metadata': {
-                        'concept': concept,
-                        'problem_name': problem_name,
-                        'method': 'eval',
-                        'augmentation_idx': aug_idx,
-                        'augmentation_seed': seed,
-                        'level': level,
-                        'placeholder_idx': placeholder_idx,
-                        'placeholder_seed': placeholder_seed
-                    }
-                }
-                
-                training_examples.append(training_example)
     
     return training_examples
 
@@ -771,13 +735,20 @@ if __name__ == "__main__":
     print("    * Geometric transformations (rotation, flip, transpose)")
     print("    * Color permutations")
     print("    * Training example order shuffling (50% chance)")
+    print("")
+    print("TRAINING DATA (leave-one-out):")
     print("  - Level 0: Unmodified (ground truth in test output)")
     print("  - Levels 1-4: 5 placeholders per level")
     print("    * Level 1: Input/ground truth with random pixel modifications")
     print("    * Level 2: 50% dimension changes, 50% crop/upscale")
     print("    * Level 3: 3x3 zeros matrix")
     print("    * Level 4: 50% random matrix, 50% matrix from problem data")
-    print(f"  - Total per problem: 30x(1 + 5x4) = {30*(1+5*4)} examples")
+    print(f"  - Total per training problem: 30x(1 + 5x4) = {30*(1+5*4)} examples")
+    print("")
+    print("EVALUATION DATA:")
+    print("  - Level 3 ONLY: 3x3 zeros matrix as test output placeholder")
+    print("  - All training examples shown normally")
+    print(f"  - Total per eval problem: 30x1 = 30 examples")
     print("="*60)
     print("")
     
