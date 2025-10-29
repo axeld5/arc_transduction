@@ -370,12 +370,6 @@ def run_test_time_sft(
     )
     model.get_input_embeddings().requires_grad_(True)
     
-    # Set up chat template
-    tokenizer = get_chat_template(
-        tokenizer,
-        chat_template="qwen-2.5",
-    )
-    
     # Convert to SFT format
     def formatting_prompts_func(examples):
         texts = []
