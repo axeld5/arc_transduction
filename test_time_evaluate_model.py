@@ -3,14 +3,16 @@ Test-time RL evaluation for ARC transduction problems.
 
 This module implements test-time adaptation:
 1. Loads a level 3 problem (3x3 zeros placeholder) from evaluation set
-2. Creates augmented training data with ALL placeholder levels (0-4)
+2. Creates augmented training data with ALL placeholder levels (0-4) using leave-one-out:
    - Parses the problem text back to structured format
+   - Uses leave-one-out on training examples (holds out one, trains on rest)
    - Generates multiple augmentations with placeholders at all difficulty levels
+   - We don't use the test case since we don't have access to its output
 3. Performs RL training with dense + sparse reward on the diverse training data
 4. Evaluates the adapted model on the ORIGINAL level 3 problem using vLLM
 
-Training: ALL levels (0-4) with augmentations
-Evaluation: ONLY the original level 3 problem
+Training: Leave-one-out with ALL levels (0-4) and augmentations
+Evaluation: ONLY the original level 3 problem with test case
 """
 
 import json
@@ -179,11 +181,11 @@ def create_test_time_training_data(
     placeholders_per_level: int = 5,
 ) -> List[Dict[str, Any]]:
     """
-    Create training data from a single problem for test-time RL.
+    Create training data from a single problem for test-time RL using leave-one-out.
     
-    Generates ALL placeholder levels (0-4) with augmentations to give the model
-    diverse training signal. This is similar to regular training data generation
-    but applied to a single problem.
+    Since we don't have access to the test output during test-time, we use leave-one-out
+    on the training examples: hold out one training example as "test", use the rest as training.
+    Generates ALL placeholder levels (0-4) with augmentations to give the model diverse training signal.
     
     Args:
         problem: Problem data with 'problem', 'answer', and 'metadata' keys
@@ -201,13 +203,28 @@ def create_test_time_training_data(
     # Parse the formatted text back into structured data
     problem_data = parse_problem_text(problem['problem'], problem['answer'])
     
+    # Check if there are enough training examples for leave-one-out
+    train_examples = problem_data.get('train', [])
+    if len(train_examples) < 2:
+        print(f"Warning: Problem has fewer than 2 training examples, cannot do leave-one-out")
+        return []
+    
     training_examples = []
+    
+    # Use leave-one-out: randomly select one training example to hold out
+    held_out_idx = random.randint(0, len(train_examples) - 1)
+    
+    # Create modified problem data with leave-one-out
+    modified_data = {
+        'train': [ex for i, ex in enumerate(train_examples) if i != held_out_idx],
+        'test': [train_examples[held_out_idx]]
+    }
     
     # Create augmented versions with all placeholder levels
     for aug_idx in range(num_augmentations):
-        seed = hash(f"{problem_name}_testtime_{aug_idx}") % (2**32)
+        seed = hash(f"{problem_name}_testtime_{held_out_idx}_{aug_idx}") % (2**32)
         random.seed(seed)
-        augmented_data = augment_problem(problem_data, seed=seed)
+        augmented_data = augment_problem(modified_data, seed=seed)
         augmented_ground_truth = augmented_data['test'][0]['output']
         
         # Level 0: Unmodified (ground truth in test output)
@@ -231,7 +248,8 @@ def create_test_time_training_data(
             'metadata': {
                 'concept': concept,
                 'problem_name': problem_name,
-                'method': 'test_time',
+                'method': 'test_time_leave_one_out',
+                'held_out_idx': held_out_idx,
                 'augmentation_idx': aug_idx,
                 'augmentation_seed': seed,
                 'level': 0,
@@ -243,7 +261,7 @@ def create_test_time_training_data(
         # Levels 1-4: Create placeholders
         for level in range(1, 5):
             for placeholder_idx in range(placeholders_per_level):
-                placeholder_seed = hash(f"{problem_name}_testtime_{aug_idx}_{level}_{placeholder_idx}") % (2**32)
+                placeholder_seed = hash(f"{problem_name}_testtime_{held_out_idx}_{aug_idx}_{level}_{placeholder_idx}") % (2**32)
                 random.seed(placeholder_seed)
                 
                 placeholder = create_placeholder(augmented_data, augmented_ground_truth, level=level)
@@ -264,7 +282,8 @@ def create_test_time_training_data(
                     'metadata': {
                         'concept': concept,
                         'problem_name': problem_name,
-                        'method': 'test_time',
+                        'method': 'test_time_leave_one_out',
+                        'held_out_idx': held_out_idx,
                         'augmentation_idx': aug_idx,
                         'augmentation_seed': seed,
                         'level': level,
