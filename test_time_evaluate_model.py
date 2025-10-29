@@ -230,7 +230,7 @@ def run_test_time_rl(
         beta=0.04,
         epsilon=3e-4,
         max_steps=dense_steps,
-        learning_rate=1e-7,
+        learning_rate=1e-5,
         lr_scheduler_type="cosine",
         logging_steps=10,
         save_steps=dense_steps,  # Save at end
@@ -304,7 +304,7 @@ def run_test_time_rl(
         beta=0.04,
         epsilon=3e-4,
         max_steps=sparse_steps,
-        learning_rate=1e-7,
+        learning_rate=1e-5,
         lr_scheduler_type="cosine",
         logging_steps=10,
         save_steps=sparse_steps,  # Save at end
