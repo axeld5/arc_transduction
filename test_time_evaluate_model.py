@@ -24,12 +24,12 @@ import os
 import random
 import gc
 import torch
+import pandas as pd
 from dotenv import load_dotenv
 from huggingface_hub import login
 from trl import GRPOConfig, GRPOTrainer, SFTConfig, SFTTrainer
 from unsloth import FastLanguageModel
 from datasets import Dataset
-from unsloth.chat_templates import get_chat_template
 
 from create_train_data import (
     create_training_examples_for_problem_eval,
@@ -47,6 +47,16 @@ if os.getenv("HF_TOKEN"):
         login(os.getenv("HF_TOKEN"))
     except Exception:
         pass
+
+
+def load_optimized_prompt(prompt_path: str = "optimized_prompt.txt") -> str:
+    """Load the optimized system prompt from file."""
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print(f"Warning: {prompt_path} not found, proceeding without system prompt")
+        return ""
 
 
 def load_eval_problem(
@@ -370,33 +380,42 @@ def run_test_time_sft(
     )
     model.get_input_embeddings().requires_grad_(True)
     
-    # Convert to SFT format
-    def formatting_prompts_func(examples):
-        texts = []
-        for problem, answer in zip(examples['problem'], examples['answer']):
-            if use_system_prompt:
-                messages = [
-                    {"role": "system", "content": "You are an expert at solving ARC (Abstraction and Reasoning Corpus) problems. Given input-output grid examples, identify the transformation pattern and apply it to solve new test cases."},
-                    {"role": "user", "content": problem},
-                    {"role": "assistant", "content": answer}
-                ]
-            else:
-                messages = [
-                    {"role": "user", "content": problem},
-                    {"role": "assistant", "content": answer}
-                ]
-            texts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False))
-        return {"text": texts}
+    # Load system prompt if needed
+    system_prompt = ""
+    if use_system_prompt:
+        system_prompt = load_optimized_prompt()
+    
+    # Convert to conversation format
+    conversations = []
+    for ex in training_data:
+        if use_system_prompt and system_prompt:
+            # Prepend system prompt to the problem
+            user_content = f"{system_prompt}\n\n{ex['problem']}"
+        else:
+            user_content = ex['problem']
+        
+        conversations.append([
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": ex['answer']}
+        ])
+    
+    # Format conversations using tokenizer
+    formatted_data = tokenizer.apply_chat_template(
+        conversations,
+        tokenize=False,
+    )
     
     # Prepare dataset
-    dataset = Dataset.from_list(training_data)
-    dataset = dataset.map(formatting_prompts_func, batched=True)
+    formatted_data = pd.Series(formatted_data)
+    formatted_data.name = "text"
+    dataset = Dataset.from_pandas(pd.DataFrame(formatted_data))
     
     print(f"Dataset size: {len(dataset)}")
     
     # Training
     training_args = SFTConfig(
         output_dir=output_dir,
+        dataset_text_field="text",
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         max_steps=num_steps,
@@ -404,17 +423,17 @@ def run_test_time_sft(
         lr_scheduler_type="cosine",
         logging_steps=10,
         save_steps=num_steps,  # Save at end
-        optim="paged_adamw_8bit",
+        optim="adamw_8bit",
         warmup_steps=10,
         report_to="tensorboard",
-        dataset_text_field="text",
         packing=False,
     )
     
     trainer = SFTTrainer(
         model=model,
-        train_dataset=dataset,
         args=training_args,
+        train_dataset=dataset,
+        processing_class=tokenizer,
     )
     
     trainer.train()
