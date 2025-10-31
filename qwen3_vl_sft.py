@@ -2,6 +2,7 @@ import json
 import pandas as pd
 import os
 from typing import List, Dict, Any, Optional
+from unsloth.trainer import UnslothVisionDataCollator
 
 os.environ["UNSLOTH_DISABLE_FUSED_LOSS"] = "1"
 os.environ["UNSLOTH_DISABLE_FAST_LOSS"] = "1"
@@ -76,19 +77,18 @@ def load_all_training_data(
     conversations = []
     for ex in all_data:
         conversation = [
-            {"role": "developer", "content": "# Instructions\n\nYou are an AI assistant specialized in solving abstract reasoning and transduction tasks."},
-            {"role": "user", "content": ex['problem'], "thinking":""},
-            {"role": "assistant", "content": ex['answer'], "thinking":""},
+            {"role": "user", "content": {"type": "text", "text": ex['problem']},},
+            {"role": "assistant", "content": {"type": "text", "text": ex['answer']}},
         ]        
         conversations.append({
             "messages": conversation
         })
-    print(f"Converted {len(conversations)} examples to GPT-OSS conversation format")    
+    print(f"Converted {len(conversations)} examples to Qwen3 VL conversation format")    
     return conversations
 
 def config_data_for_sft(conversations: List[Dict[str, Any]], tokenizer):
     """
-    Format conversation data for SFT training with GPT-OSS.
+    Format conversation data for SFT training with Qwen3 VL.
     
     Args:
         conversations: List of conversation dictionaries with messages and reasoning_effort
@@ -114,8 +114,8 @@ def config_data_for_sft(conversations: List[Dict[str, Any]], tokenizer):
 def run_sft(
     train_data_path: str = "generated_data/train_data.json",
     eval_data_path: str = "generated_data/eval_data.json",
-    output_dir: str = "gpt_oss_20b_transduction_sft",
-    base_model: str = "unsloth/gpt-oss-20b",
+    output_dir: str = "qwen3_8b_conceptarc_sft",
+    base_model: str = "Qwen/Qwen3-VL-8B-Instruct",
     learning_rate: float = 2e-4,
     num_train_epochs: int = 1,
     per_device_batch_size: int = 1,
@@ -152,8 +152,12 @@ def run_sft(
         r=lora_rank,
         lora_alpha=64,
         bias="none",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
-                       "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"],
+        finetune_vision_layers     = False, # False if not finetuning vision layers
+        finetune_language_layers   = True, # False if not finetuning language layers
+        finetune_attention_modules = True, # False if not finetuning attention layers
+        finetune_mlp_modules       = True, # False if not finetuning MLP layers
+        #target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
+        #               "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"],
         use_gradient_checkpointing="unsloth",
     )
     
@@ -200,6 +204,7 @@ def run_sft(
         args=args,
         train_dataset=dataset,
         processing_class=tokenizer,
+        data_collator = UnslothVisionDataCollator(model, tokenizer), # Must use!
     )
     
     print("\n[SFT] Starting training...")
@@ -268,14 +273,14 @@ if __name__ == "__main__":
     sft_model_save_path, sft_merged_save_path, eval_results = run_sft(
         train_data_path="generated_data/train_conceptarc_data.json",
         eval_data_path="generated_data/eval_conceptarc_data.json",
-        output_dir="gpt_oss_20b_transduction_sft",
-        base_model="unsloth/gpt-oss-20b",
+        output_dir="qwen3_8b_conceptarc_sft",
+        base_model="Qwen/Qwen3-VL-8B-Instruct",
         learning_rate=2e-4,
         num_train_epochs=1,
         per_device_batch_size=1,
-        gradient_accumulation_steps=16,
+        gradient_accumulation_steps=4,
         max_seq_length=8192,
-        lora_rank=128,
+        lora_rank=32,
     )
     
     print(f"\nGPT-OSS SFT adapter saved to: {sft_model_save_path}")
