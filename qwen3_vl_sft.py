@@ -79,8 +79,8 @@ def load_all_training_data(
     conversations = []
     for ex in all_data:
         conversation = [
-            {"role": "user", "content": {"type": "text", "text": ex['problem']},},
-            {"role": "assistant", "content": {"type": "text", "text": ex['answer']}},
+            {"role": "user", "content": ex['problem'],},
+            {"role": "assistant", "content": ex['answer']},
         ]        
         conversations.append({
             "messages": conversation
