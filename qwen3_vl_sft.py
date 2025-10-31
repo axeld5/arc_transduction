@@ -210,7 +210,6 @@ def run_sft(
         args=args,
         train_dataset=dataset,
         processing_class=tokenizer,
-        data_collator = UnslothVisionDataCollator(model, tokenizer), # Must use!
     )
     
     print("\n[SFT] Starting training...")
