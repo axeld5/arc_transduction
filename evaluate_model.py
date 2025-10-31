@@ -88,7 +88,6 @@ def augmented_voting_inference_batched(
     llm,
     tokenizer,
     samples: List[Dict[str, Any]],
-    system_prompt: str,
     sampling_params,
     lora_request=None,
     num_augmentations: int = 30,
@@ -314,7 +313,6 @@ def evaluate_model_vllm(
     max_samples_per_level: int = 20,
     attempts_per_problem: int = 1,
     temperature: float = 0.7,
-    use_system_prompt: bool = True,
     use_lora: bool = False,
     lora_path: Optional[str] = None,
     print_examples: bool = False,
@@ -331,7 +329,6 @@ def evaluate_model_vllm(
         max_samples_per_level: Maximum samples to test per level (1-6)
         attempts_per_problem: Number of generation attempts per problem (ignored if inference_mode != "standard")
         temperature: Sampling temperature (default: 0.7)
-        use_system_prompt: Whether to prepend optimized prompt to each problem
         use_lora: Whether to use LoRA adapter (default: False)
         lora_path: Path to LoRA adapter directory (required if use_lora=True)
         print_examples: Whether to print first example of first 10 problems (default: False)
@@ -352,7 +349,6 @@ def evaluate_model_vllm(
     print(f"Inference mode: {inference_mode}")
     if inference_mode == "augmented_voting":
         print(f"  Num augmentations: {num_augmentations}")
-    print(f"Using system prompt: {use_system_prompt}")
     print(f"Using LoRA: {use_lora}")
     if use_lora:
         print(f"LoRA path: {lora_path}")
@@ -362,13 +358,6 @@ def evaluate_model_vllm(
     # Validate LoRA settings
     if use_lora and not lora_path:
         raise ValueError("lora_path must be provided when use_lora=True")
-    
-    # Load system prompt if requested
-    system_prompt = ""
-    if use_system_prompt:
-        system_prompt = load_optimized_prompt()
-        if system_prompt:
-            print(f"Loaded system prompt ({len(system_prompt)} characters)")
     
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -430,10 +419,7 @@ def evaluate_model_vllm(
         
         for sample_idx, sample in enumerate(sampled_data):
             # Prepend system prompt if requested
-            if use_system_prompt and system_prompt:
-                content = f"{system_prompt}\n\n{sample['problem']}"
-            else:
-                content = sample['problem']
+            content = sample['problem']
             
             messages = [{"role": "user", "content": content}]
             formatted_prompt = tokenizer.apply_chat_template(
@@ -622,8 +608,6 @@ if __name__ == "__main__":
                         help="Attempts per problem (default: 1, only for standard mode)")
     parser.add_argument("--temperature", type=float, default=0.7,
                         help="Sampling temperature (default: 0.7)")
-    parser.add_argument("--no-system-prompt", action="store_true",
-                        help="Disable system prompt")
     parser.add_argument("--use-lora", action="store_true",
                         help="Enable LoRA adapter")
     parser.add_argument("--lora-path", type=str, default=None,
@@ -644,7 +628,6 @@ if __name__ == "__main__":
         max_samples_per_level=args.samples_per_level,
         attempts_per_problem=args.attempts,
         temperature=args.temperature,
-        use_system_prompt=not args.no_system_prompt,
         use_lora=args.use_lora,
         lora_path=args.lora_path,
         print_examples=args.print_examples,
