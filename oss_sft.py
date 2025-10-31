@@ -76,6 +76,7 @@ def load_all_training_data(
     conversations = []
     for ex in all_data:
         conversation = [
+            {"role": "developer", "content": "# Instructions\n\nYou are an AI assistant specialized in solving abstract reasoning and transduction tasks."},
             {"role": "user", "content": ex['problem'], "thinking":""},
             {"role": "assistant", "content": ex['answer'], "thinking":""},
         ]        
