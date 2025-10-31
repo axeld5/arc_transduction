@@ -11,7 +11,7 @@ sudo snap install astral-uv --classic && sudo uv sync
 sudo uv pip install unsloth unsloth-zoo
 sudo uv pip install triton && sudo uv pip install kernels
 sudo uv pip install openai-harmony
-sudo uv pip install --force-reinstall vllm --torch-backend=auto
+sudo uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
 
 For finetuning
 sudo uv run induction_data_prep.py && sudo uv run accelerate launch induction_sft.py

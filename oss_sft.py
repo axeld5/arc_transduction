@@ -268,8 +268,8 @@ if __name__ == "__main__":
     sft_model_save_path, sft_merged_save_path, eval_results = run_sft(
         train_data_path="generated_data/train_conceptarc_data.json",
         eval_data_path="generated_data/eval_conceptarc_data.json",
-        output_dir="gpt_oss_20b_transduction_sft",
-        base_model="unsloth/gpt-oss-20b",
+        output_dir="qwen3_30b_conceptarc_sft",
+        base_model="Qwen/Qwen3-30B-A3B-Instruct-2507",
         learning_rate=2e-4,
         num_train_epochs=1,
         per_device_batch_size=1,
