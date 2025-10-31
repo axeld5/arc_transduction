@@ -3,6 +3,8 @@ import pandas as pd
 import os
 from typing import List, Dict, Any, Optional
 from unsloth.trainer import UnslothVisionDataCollator
+from unsloth.chat_templates import get_chat_template
+
 
 os.environ["UNSLOTH_DISABLE_FUSED_LOSS"] = "1"
 os.environ["UNSLOTH_DISABLE_FAST_LOSS"] = "1"
@@ -103,7 +105,7 @@ def config_data_for_sft(conversations: List[Dict[str, Any]], tokenizer):
             conv["messages"],
             tokenize=False,
             add_generation_prompt=False,
-        )
+        ).removeprefix('<bos>')
         formatted_texts.append(text)
     formatted_data = pd.Series(formatted_texts)
     formatted_data.name = "text"
@@ -146,6 +148,10 @@ def run_sft(
         load_in_4bit=True,
         device_map=device_map,
         full_finetuning=False,
+    )
+    tokenizer = get_chat_template(
+        tokenizer,
+        chat_template = "gemma-3",
     )
     model = FastLanguageModel.get_peft_model(
         model,
@@ -274,7 +280,7 @@ if __name__ == "__main__":
         train_data_path="generated_data/train_conceptarc_data.json",
         eval_data_path="generated_data/eval_conceptarc_data.json",
         output_dir="gemma_3_27b_conceptarc_sft",
-        base_model="google/gemma-3-27b-it",
+        base_model="unsloth/gemma-3-27b-it",
         learning_rate=2e-4,
         num_train_epochs=1,
         per_device_batch_size=1,
