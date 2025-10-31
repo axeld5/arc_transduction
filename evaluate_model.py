@@ -101,7 +101,6 @@ def augmented_voting_inference_batched(
         llm: vLLM model instance
         tokenizer: Tokenizer instance
         samples: List of problem samples with 'problem' field
-        system_prompt: System prompt to prepend
         sampling_params: Sampling parameters for generation
         lora_request: LoRA request if using LoRA
         num_augmentations: Number of augmented versions to create (default: 30)
@@ -166,8 +165,7 @@ def augmented_voting_inference_batched(
         fallback_prompts = []
         for idx in fallback_indices:
             problem_text = samples[idx]['problem']
-            content = f"{system_prompt}\n\n{problem_text}" if system_prompt else problem_text
-            messages = [{"role": "user", "content": content}]
+            messages = [{"role": "user", "content": problem_text}]
             formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             fallback_prompts.append(formatted_prompt)
         
@@ -238,8 +236,7 @@ def augmented_voting_inference_batched(
             augmented_problem += f"Test Case:\nInput:\n{grid_to_string(aug_test_input)}\n\nOutput:"
             
             # Create prompt
-            content = f"{system_prompt}\n\n{augmented_problem}" if system_prompt else augmented_problem
-            messages = [{"role": "user", "content": content}]
+            messages = [{"role": "user", "content": augmented_problem}]
             formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             all_prompts.append(formatted_prompt)
             
@@ -473,7 +470,6 @@ def evaluate_model_vllm(
             llm=llm,
             tokenizer=tokenizer,
             samples=all_samples,
-            system_prompt=system_prompt if use_system_prompt else "",
             sampling_params=sampling_params,
             lora_request=lora_request,
             num_augmentations=num_augmentations
@@ -596,7 +592,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Evaluate model using vLLM")
     parser.add_argument("model_path", help="Path to the model to evaluate")
-    parser.add_argument("--eval-data", default="generated_data/eval_data.json",
+    parser.add_argument("--eval-data", default="generated_data/eval_conceptarc_data.json",
                         help="Path to evaluation data (default: generated_data/eval_data.json)")
     parser.add_argument("--samples-per-level", type=int, default=20,
                         help="Max samples per level (default: 20)")
