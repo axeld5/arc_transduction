@@ -2,11 +2,20 @@
 Creates augmented training data from ARC datasets.
 
 This module:
-1. Loads problems from training_data/evaluation_data folders
+1. Processes problems from any folder of JSON files (training_data/, evaluation_data/, train_conceptarc/, eval_conceptarc/)
 2. Uses leave-one-out sampling from available I/O pairs (train/test/arc-gen)
-3. Applies random augmentations to entire problems
-4. Creates prompts without placeholders
-5. Always includes one unaugmented sample
+3. Applies random augmentations to entire problems (geometric + color transformations)
+4. Creates text prompts without placeholders - just the problem and answer
+5. Always includes one unaugmented sample per problem
+6. For evaluation data: only creates unaugmented samples (no augmentation)
+
+Key Functions:
+- from_data_to_problem(): Converts problem dict to text prompt
+- augment_problem(): Applies random augmentations to a problem
+- create_training_sample_with_leave_one_out(): Randomly samples I/O pairs with leave-one-out
+- create_training_examples_for_problem(): Creates multiple augmented samples for one problem
+- create_ttft_examples_for_problem(): Creates Test-Time Fine-Tuning examples (only train data)
+- create_training_data_from_folder(): Processes an entire folder of problems
 """
 
 import json
@@ -15,43 +24,34 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple
 import random
 
-from loader import (
-    list_corpus_concepts,
-    list_corpus_problems_by_concept,
-    load_corpus_problem_by_name,
-    list_training_problems,
-    list_evaluation_problems,
-    load_training_problem,
-    load_evaluation_problem
-)
+# No loader imports needed - we work directly with folders
 from augment import (
     assign_random_augmentations,
     apply_augmentations_to_grids
 )
 
 
-def from_data_to_problem(data: Dict[str, Any], include_test_output: bool = False) -> Dict[str, str]:
+def from_data_to_problem(data: Dict[str, Any], task_hash: str = None) -> Dict[str, str]:
     """
     Convert problem data to formatted text representation.
     
     Args:
         data: Problem data with train/test examples
-        include_test_output: If True, include test output (for training). If False, exclude it.
+        task_hash: Optional hash identifier for the task (consistent across augmentations)
         
     Returns:
         Dictionary with 'problem' text and 'answer' text
     """
-    problem_text = "Identify the pattern within the grids and solve the problem.\n\n"
+    if task_hash:
+        problem_text = f"Solve task {task_hash}\n\n"
     
     # Add training examples
     if 'train' in data:
-        problem_text += "Training Examples:\n"
         for i, example in enumerate(data['train'], 1):
-            problem_text += f"Example {i}:\n"
-            problem_text += "Input:\n"
+            problem_text += "I:\n"
             for row in example['input']:
                 problem_text += " ".join(map(str, row)) + "\n"
-            problem_text += "Output:\n"
+            problem_text += "O:\n"
             for row in example['output']:
                 problem_text += " ".join(map(str, row)) + "\n"
             problem_text += "\n"
@@ -60,14 +60,10 @@ def from_data_to_problem(data: Dict[str, Any], include_test_output: bool = False
     answer = ""
     if 'test' in data and len(data['test']) > 0:
         test_case = data['test'][0]
-        problem_text += "Test Case:\n"
-        problem_text += "Input:\n"
+        problem_text += "I:\n"
         for row in test_case['input']:
             problem_text += " ".join(map(str, row)) + "\n"
-        
-        if include_test_output:
-            problem_text += "Output:\n"
-        
+        problem_text += "O:\n"
         # Store the actual answer
         for row in test_case['output']:
             answer += " ".join(map(str, row)) + "\n"
@@ -208,7 +204,8 @@ def create_training_examples_for_problem(
     problem_data: Dict[str, Any],
     source: str,
     num_samples: int = 30,
-    data_dir: str = "."
+    data_dir: str = ".",
+    include_augmented: bool = True
 ) -> List[Dict[str, Any]]:
     """
     Create training examples for a problem using leave-one-out sampling.
@@ -219,17 +216,21 @@ def create_training_examples_for_problem(
         source: Source of the problem (concept name, "training", or "evaluation")
         num_samples: Number of samples to create
         data_dir: Root directory
+        include_augmented: If False, only create unaugmented samples (for evaluation)
         
     Returns:
         List of training examples with metadata
     """
     training_examples = []
     
+    # Generate consistent task hash for this problem
+    task_hash = f"{hash(problem_name) % (2**32):08x}"
+    
     # First, create one UNAUGMENTED sample
     seed = hash(f"{problem_name}_unaugmented") % (2**32)
     unaugmented_data = create_training_sample_with_leave_one_out(problem_data, seed=seed)
     
-    formatted = from_data_to_problem(unaugmented_data, include_test_output=False)
+    formatted = from_data_to_problem(unaugmented_data, task_hash=task_hash)
     
     training_examples.append({
         'problem': formatted['problem'],
@@ -243,30 +244,31 @@ def create_training_examples_for_problem(
         }
     })
     
-    # Create augmented samples
-    for sample_idx in range(1, num_samples):
-        seed = hash(f"{problem_name}_sample_{sample_idx}") % (2**32)
-        
-        # Apply leave-one-out sampling
-        sampled_data = create_training_sample_with_leave_one_out(problem_data, seed=seed)
-        
-        # Apply augmentations to the entire problem
-        augmented_data = augment_problem(sampled_data, seed=seed, shuffle_train_order=True)
-        
-        # Convert to formatted text
-        formatted = from_data_to_problem(augmented_data, include_test_output=False)
-        
-        training_examples.append({
-            'problem': formatted['problem'],
-            'answer': formatted['answer'],
-            'metadata': {
-                'source': source,
-                'problem_name': problem_name,
-                'augmented': True,
-                'sample_idx': sample_idx,
-                'seed': seed
-            }
-        })
+    # Create augmented samples only if requested
+    if include_augmented:
+        for sample_idx in range(1, num_samples):
+            seed = hash(f"{problem_name}_sample_{sample_idx}") % (2**32)
+            
+            # Apply leave-one-out sampling
+            sampled_data = create_training_sample_with_leave_one_out(problem_data, seed=seed)
+            
+            # Apply augmentations to the entire problem
+            augmented_data = augment_problem(sampled_data, seed=seed, shuffle_train_order=True)
+            
+            # Convert to formatted text
+            formatted = from_data_to_problem(augmented_data, task_hash=task_hash)
+            
+            training_examples.append({
+                'problem': formatted['problem'],
+                'answer': formatted['answer'],
+                'metadata': {
+                    'source': source,
+                    'problem_name': problem_name,
+                    'augmented': True,
+                    'sample_idx': sample_idx,
+                    'seed': seed
+                }
+            })
     
     return training_examples
 
@@ -293,6 +295,9 @@ def create_ttft_examples_for_problem(
     """
     training_examples = []
     
+    # Generate consistent task hash for this problem
+    task_hash = f"{hash(problem_name) % (2**32):08x}"
+    
     # Only use train examples
     train_examples = problem_data.get('train', [])
     
@@ -312,7 +317,7 @@ def create_ttft_examples_for_problem(
         'test': [train_examples[held_out_idx]]
     }
     
-    formatted = from_data_to_problem(unaugmented_data, include_test_output=False)
+    formatted = from_data_to_problem(unaugmented_data, task_hash=task_hash)
     
     training_examples.append({
         'problem': formatted['problem'],
@@ -344,7 +349,7 @@ def create_ttft_examples_for_problem(
         augmented_data = augment_problem(sampled_data, seed=seed, shuffle_train_order=True)
         
         # Convert to formatted text
-        formatted = from_data_to_problem(augmented_data, include_test_output=False)
+        formatted = from_data_to_problem(augmented_data, task_hash=task_hash)
         
         training_examples.append({
             'problem': formatted['problem'],
@@ -366,7 +371,8 @@ def create_training_data_from_folder(
     folder_path: str,
     num_samples: int = 30,
     output_file: str = None,
-    verbose: bool = True
+    verbose: bool = True,
+    include_augmented: bool = True
 ) -> List[Dict[str, Any]]:
     """
     Create training data from a folder of JSON problem files.
@@ -382,6 +388,7 @@ def create_training_data_from_folder(
         num_samples: Number of samples per problem
         output_file: File to save output
         verbose: Print progress
+        include_augmented: If False, only create unaugmented samples (for evaluation)
         
     Returns:
         List of training examples
@@ -399,6 +406,8 @@ def create_training_data_from_folder(
     if verbose:
         print(f"\nProcessing folder: {folder_path}")
         print(f"Found {len(problem_files)} problems")
+        if not include_augmented:
+            print("  Mode: Unaugmented only (evaluation)")
     
     for problem_file in problem_files:
         problem_name = problem_file.stem
@@ -428,7 +437,8 @@ def create_training_data_from_folder(
             problem_data=problem_data,
             source=source,
             num_samples=num_samples,
-            data_dir="."
+            data_dir=".",
+            include_augmented=include_augmented
         )
         
         all_examples.extend(examples)
@@ -479,7 +489,8 @@ if __name__ == "__main__":
         folder_path="eval_conceptarc",
         num_samples=30,
         output_file="generated_data/eval_conceptarc_data.json",
-        verbose=True
+        verbose=True,
+        include_augmented=False
     )
     
     print("\n" + "="*60)
@@ -497,7 +508,8 @@ if __name__ == "__main__":
         folder_path="evaluation_data",
         num_samples=30,
         output_file="generated_data/eval_arc_data.json",
-        verbose=True
+        verbose=True,
+        include_augmented=False
     )
     
     print("\n" + "="*60)
