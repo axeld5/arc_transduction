@@ -190,8 +190,6 @@ def run_sft(
         learning_rate=learning_rate,
         warmup_steps=5,
         lr_scheduler_type="linear",
-        fp16=False,  # GPT-OSS uses float32
-        bf16=False,
         logging_steps=10,
         max_steps=100,
         save_total_limit=2,
