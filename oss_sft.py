@@ -112,6 +112,7 @@ def config_data_for_sft(conversations: List[Dict[str, Any]], tokenizer):
 
 def run_sft(
     train_data_path: str = "generated_data/train_data.json",
+    eval_data_path: str = "generated_data/eval_data.json",
     output_dir: str = "gpt_oss_20b_transduction_sft",
     base_model: str = "unsloth/gpt-oss-20b",
     learning_rate: float = 2e-4,
@@ -133,11 +134,8 @@ def run_sft(
         num_train_epochs: Number of training epochs
         per_device_batch_size: Batch size per device
         gradient_accumulation_steps: Gradient accumulation steps
-        use_system_prompt: Whether to use the optimized system prompt
         max_seq_length: Maximum sequence length
         lora_rank: LoRA rank (smaller for GPT-OSS due to model size)
-        reasoning_effort: Reasoning effort level (low, medium, high)
-        eval_after_training: Whether to run evaluation after training
     """    
     # Load and prepare data
     conversations = load_all_training_data(train_data_path)
@@ -152,14 +150,11 @@ def run_sft(
     model = FastLanguageModel.get_peft_model(
         model,
         r=lora_rank,
-        lora_alpha=16,
-        lora_dropout=0,
+        lora_alpha=64,
         bias="none",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
-                       "gate_proj", "up_proj", "down_proj", "embed_gates"],
+                       "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"],
         use_gradient_checkpointing="unsloth",
-        random_state=3407,
-        use_rslora=False,
     )
     
     # Prepare dataset
@@ -300,14 +295,15 @@ def run_sft(
 if __name__ == "__main__":
     sft_model_save_path, sft_merged_save_path, eval_results = run_sft(
         train_data_path="generated_data/train_conceptarc_data.json",
+        eval_data_path="generated_data/eval_conceptarc_data.json",
         output_dir="gpt_oss_20b_transduction_sft",
-        base_model="unsloth/gpt-oss-20b",  # 20B GPT-OSS model
+        base_model="unsloth/gpt-oss-20b",
         learning_rate=2e-4,
         num_train_epochs=1,
-        per_device_batch_size=1,  # Smaller batch size for 20B model
-        gradient_accumulation_steps=16,  # Higher accumulation for effective batch size
+        per_device_batch_size=1,
+        gradient_accumulation_steps=16,
         max_seq_length=8192,
-        lora_rank=16,  # Smaller rank for 20B model
+        lora_rank=256,
     )
     
     print(f"\nGPT-OSS SFT adapter saved to: {sft_model_save_path}")
