@@ -202,34 +202,6 @@ def run_sft(
         processing_class=tokenizer,
     )
     
-    # Use GPT-OSS specific training on responses only
-    print("\n[GPT-OSS] Configuring to train only on final responses...")
-    gpt_oss_kwargs = dict(
-        instruction_part="<|start|>user<|message|>",
-        response_part="<|start|>assistant<|channel|>final<|message|>"
-    )
-    
-    trainer = train_on_responses_only(
-        trainer,
-        **gpt_oss_kwargs,
-    )
-    
-    # Verify masking (on main process only)
-    if local_rank == 0:
-        print("\n" + "="*80)
-        print("MASKING VERIFICATION:")
-        print("="*80)
-        print("Full input (first 300 chars):")
-        sample_text = tokenizer.decode(trainer.train_dataset[0]["input_ids"][:300])
-        print(sample_text)
-        print("\nMasked output (labels only, first 300 tokens):")
-        sample_labels = tokenizer.decode([
-            tokenizer.pad_token_id if x == -100 else x 
-            for x in trainer.train_dataset[0]["labels"][:300]
-        ]).replace(tokenizer.pad_token, " ")
-        print(sample_labels)
-        print("="*80 + "\n")
-    
     print("\n[SFT] Starting training...")
     trainer.train()
     
