@@ -176,14 +176,14 @@ def run_sft(
         dataset_text_field="text",
         per_device_train_batch_size=per_device_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        num_train_epochs=num_train_epochs,
+        #num_train_epochs=num_train_epochs,
         learning_rate=learning_rate,
         warmup_steps=5,
         lr_scheduler_type="linear",
         fp16=False,  # GPT-OSS uses float32
         bf16=False,
         logging_steps=10,
-        save_steps=100,
+        max_steps=100,
         save_total_limit=2,
         report_to="tensorboard",
         remove_unused_columns=False,
@@ -273,9 +273,9 @@ if __name__ == "__main__":
         learning_rate=2e-4,
         num_train_epochs=1,
         per_device_batch_size=1,
-        gradient_accumulation_steps=16,
+        gradient_accumulation_steps=4,
         max_seq_length=8192,
-        lora_rank=256,
+        lora_rank=128,
     )
     
     print(f"\nGPT-OSS SFT adapter saved to: {sft_model_save_path}")
