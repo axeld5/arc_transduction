@@ -307,6 +307,185 @@ def augmented_voting_inference_batched(
     return final_results
 
 
+def evaluate_model_gptoss(
+    model_path: str,
+    eval_data_path: str,
+    max_samples_per_level: int = 20,
+    temperature: float = 0.7,
+    print_examples: bool = False,
+) -> Dict[str, Any]:
+    """
+    Evaluate GPT-OSS finetuned model using Unsloth's FastLanguageModel.
+    
+    Args:
+        model_path: Path to the finetuned model
+        eval_data_path: Path to evaluation data JSON file
+        max_samples_per_level: Maximum samples to test (default: 20)
+        temperature: Sampling temperature (default: 0.7)
+        print_examples: Whether to print first example of first 10 problems (default: False)
+        
+    Returns:
+        Dictionary with results per source and overall accuracy
+    """
+    from unsloth import FastLanguageModel
+    from reward_functions import parse_grid_from_string, check_value
+    
+    print(f"\n{'='*60}")
+    print(f"Evaluating GPT-OSS model: {model_path}")
+    print(f"Eval data: {eval_data_path}")
+    print(f"Inference mode: GPT-OSS with reasoning_effort=medium")
+    print(f"Print examples: {print_examples}")
+    print(f"{'='*60}")
+    
+    # Load model and tokenizer using FastLanguageModel
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=model_path,
+        max_seq_length=1024,
+        dtype=None,
+        load_in_4bit=True,
+    )
+    
+    # Load eval data
+    with open(eval_data_path, 'r') as f:
+        eval_data = json.load(f)
+    
+    # Sample problems
+    if max_samples_per_level < len(eval_data):
+        sampled_data = random.sample(eval_data, max_samples_per_level)
+    else:
+        sampled_data = eval_data
+    
+    # Organize by source for reporting
+    source_samples = {}
+    for ex in sampled_data:
+        source = ex['metadata'].get('source', 'unknown')
+        if source not in source_samples:
+            source_samples[source] = []
+        source_samples[source].append(ex)
+    
+    # Initialize results tracking
+    results = {"overall": {"correct": 0, "total": 0}}
+    for source in source_samples.keys():
+        results[source] = {"correct": 0, "total": 0}
+    
+    print(f"\nGenerating outputs for {len(sampled_data)} problems...")
+    
+    # Process each sample
+    all_outputs = []
+    for sample_idx, sample in enumerate(sampled_data):
+        content = sample['problem']
+        source = sample['metadata'].get('source', 'unknown')
+        
+        # Prepare messages
+        messages = [
+            {"role": "user", "content": content}
+        ]
+        
+        # Apply chat template with reasoning_effort
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+            reasoning_effort="medium",
+        ).to("cuda")
+        
+        # Generate without streaming
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=4096,
+            temperature=temperature,
+            top_p=0.8,
+            top_k=20,
+        )
+        
+        # Decode output
+        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Extract only the assistant's response (after the last user message)
+        if "assistant" in generated_text:
+            generated_text = generated_text.split("assistant")[-1].strip()
+        
+        all_outputs.append({
+            'sample_idx': sample_idx,
+            'sample': sample,
+            'source': source,
+            'generated_text': generated_text
+        })
+        
+        # Print progress
+        if (sample_idx + 1) % 10 == 0:
+            print(f"  Processed {sample_idx + 1}/{len(sampled_data)} problems...")
+    
+    print("Generation complete! Evaluating results...\n")
+    
+    # Print examples if requested
+    if print_examples:
+        print(f"\n{'='*60}")
+        print("EXAMPLE OUTPUTS (First 10 Problems)")
+        print(f"{'='*60}\n")
+        for i, output_data in enumerate(all_outputs[:10]):
+            sample = output_data['sample']
+            source = output_data['source']
+            problem_name = sample['metadata'].get('problem_name', f'Problem {i}')
+            generated_text = output_data['generated_text']
+            
+            print(f"Problem {i + 1} ({source}: {problem_name}):")
+            print(f"Input:\n{sample['problem'][:200]}..." if len(sample['problem']) > 200 else f"Input:\n{sample['problem']}")
+            print(f"\nGenerated Output:\n{generated_text}\n")
+            print(f"Expected:\n{sample['answer']}\n")
+            print("-" * 60)
+        print(f"{'='*60}\n")
+    
+    # Evaluate results
+    for output_data in all_outputs:
+        sample = output_data['sample']
+        source = output_data['source']
+        generated_text = output_data['generated_text']
+        
+        # Count total
+        if source in results:
+            results[source]["total"] += 1
+        results["overall"]["total"] += 1
+        
+        # Parse expected and generated grids
+        expected_grid = parse_grid_from_string(sample['answer'])
+        is_correct = check_value(generated_text, expected_grid)
+        
+        if is_correct:
+            if source in results:
+                results[source]["correct"] += 1
+            results["overall"]["correct"] += 1
+            problem_name = sample['metadata'].get('problem_name', f'Problem {output_data["sample_idx"]}')
+            print(f"✓ {source}: {problem_name}")
+        else:
+            problem_name = sample['metadata'].get('problem_name', f'Problem {output_data["sample_idx"]}')
+            print(f"✗ {source}: {problem_name}")
+    
+    # Calculate accuracies
+    for key in results:
+        total = results[key]["total"]
+        correct = results[key]["correct"]
+        results[key]["accuracy"] = correct / total if total > 0 else 0.0
+    
+    print(f"\n{'='*60}")
+    print("EVALUATION RESULTS")
+    print(f"{'='*60}")
+    print(f"Overall: {results['overall']['correct']}/{results['overall']['total']} = {results['overall']['accuracy']:.2%}")
+    print("\nResults by source:")
+    for source in sorted(results.keys()):
+        if source != "overall" and results[source]["total"] > 0:
+            print(f"  {source}: {results[source]['correct']}/{results[source]['total']} = {results[source]['accuracy']:.2%}")
+    print(f"{'='*60}\n")
+    
+    # Cleanup
+    del model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    return results
+
+
 def evaluate_model_vllm(
     model_path: str,
     eval_data_path: str,
@@ -598,7 +777,7 @@ if __name__ == "__main__":
     import sys
     import argparse
     
-    parser = argparse.ArgumentParser(description="Evaluate model using vLLM")
+    parser = argparse.ArgumentParser(description="Evaluate model using vLLM or GPT-OSS")
     parser.add_argument("model_path", help="Path to the model to evaluate")
     parser.add_argument("--eval-data", default="generated_data/eval_conceptarc_data.json",
                         help="Path to evaluation data (default: generated_data/eval_data.json)")
@@ -609,31 +788,48 @@ if __name__ == "__main__":
     parser.add_argument("--temperature", type=float, default=0.7,
                         help="Sampling temperature (default: 0.7)")
     parser.add_argument("--use-lora", action="store_true",
-                        help="Enable LoRA adapter")
+                        help="Enable LoRA adapter (vLLM mode only)")
     parser.add_argument("--lora-path", type=str, default=None,
                         help="Path to LoRA adapter directory (required if --use-lora)")
     parser.add_argument("--print-examples", action="store_true",
                         help="Print first example of first 10 problems")
     parser.add_argument("--inference-mode", type=str, default="standard",
                         choices=["standard", "augmented_voting"],
-                        help="Inference strategy (default: standard)")
+                        help="Inference strategy (default: standard, vLLM mode only)")
     parser.add_argument("--num-augmentations", type=int, default=30,
                         help="Number of augmentations for augmented_voting mode (default: 30)")
+    parser.add_argument("--use-gpt-oss", action="store_true",
+                        help="Use GPT-OSS inference mode (reasoning_effort=medium)")
     
     args = parser.parse_args()
     
-    results = evaluate_model_vllm(
-        model_path=args.model_path,
-        eval_data_path=args.eval_data,
-        max_samples_per_level=args.samples_per_level,
-        attempts_per_problem=args.attempts,
-        temperature=args.temperature,
-        use_lora=args.use_lora,
-        lora_path=args.lora_path,
-        print_examples=args.print_examples,
-        inference_mode=args.inference_mode,
-        num_augmentations=args.num_augmentations,
-    )
+    # Route to appropriate evaluation function
+    if args.use_gpt_oss:
+        # GPT-OSS mode
+        if args.use_lora or args.inference_mode != "standard":
+            print("Warning: --use-lora and --inference-mode are ignored in GPT-OSS mode")
+        
+        results = evaluate_model_gptoss(
+            model_path=args.model_path,
+            eval_data_path=args.eval_data,
+            max_samples_per_level=args.samples_per_level,
+            temperature=args.temperature,
+            print_examples=args.print_examples,
+        )
+    else:
+        # vLLM mode
+        results = evaluate_model_vllm(
+            model_path=args.model_path,
+            eval_data_path=args.eval_data,
+            max_samples_per_level=args.samples_per_level,
+            attempts_per_problem=args.attempts,
+            temperature=args.temperature,
+            use_lora=args.use_lora,
+            lora_path=args.lora_path,
+            print_examples=args.print_examples,
+            inference_mode=args.inference_mode,
+            num_augmentations=args.num_augmentations,
+        )
     
     # Save results
     output_file = f"{args.model_path.replace('/', '_')}_eval_results.json"
