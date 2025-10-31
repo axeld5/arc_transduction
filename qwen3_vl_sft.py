@@ -211,6 +211,12 @@ def run_sft(
         train_dataset=dataset,
         processing_class=tokenizer,
     )
+
+    trainer = train_on_responses_only(
+        trainer,
+        instruction_part = "<start_of_turn>user\n",
+        response_part = "<start_of_turn>model\n",
+    )
     
     print("\n[SFT] Starting training...")
     trainer.train()
