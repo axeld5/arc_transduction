@@ -275,7 +275,7 @@ if __name__ == "__main__":
         per_device_batch_size=1,
         gradient_accumulation_steps=4,
         max_seq_length=8192,
-        lora_rank=128,
+        lora_rank=32,
     )
     
     print(f"\nGPT-OSS SFT adapter saved to: {sft_model_save_path}")
