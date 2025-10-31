@@ -120,38 +120,49 @@ def augmented_voting_inference_batched(
     for sample_idx, sample in enumerate(samples):
         problem_text = sample['problem']
         
-        # Extract input/output examples
+        # Extract all I:/O: pairs
+        # Split by I: to get all input sections
+        parts = problem_text.split('I:\n')
+        
         examples = []
-        example_pattern = r'Example \d+:\s*Input:\s*(.*?)\s*Output:\s*(.*?)(?=Example \d+:|Test Case:|$)'
-        matches = re.findall(example_pattern, problem_text, re.DOTALL)
+        test_input_grid = None
         
-        for input_section, output_section in matches:
-            input_grid = parse_grid_from_string(input_section.strip())
-            output_grid = parse_grid_from_string(output_section.strip())
+        # First part is the intro (e.g., "Solve task XXXXX")
+        intro = parts[0].strip() + '\n\n' if parts[0].strip() else ''
+        
+        # Process each I: section
+        for i in range(1, len(parts)):
+            part = parts[i]
             
-            if input_grid and output_grid:
-                examples.append((input_grid, output_grid))
-        
-        # Extract test input
-        test_input_match = re.search(r'Test Case:\s*Input:\s*(.*?)(?:\s*Output Placeholder:|$)', problem_text, re.DOTALL)
-        if test_input_match:
-            test_input_section = test_input_match.group(1).strip()
-            test_input_grid = parse_grid_from_string(test_input_section)
-        else:
-            test_input_grid = None
+            # Check if this I: has a corresponding O:
+            if '\nO:\n' in part:
+                # This is a training example
+                input_section, output_section = part.split('\nO:\n', 1)
+                
+                # Parse grids
+                input_grid = parse_grid_from_string(input_section.strip())
+                
+                # Output might be followed by another I: or end of string
+                # Extract just the grid part
+                output_lines = []
+                for line in output_section.split('\n'):
+                    if line.strip() and not line.startswith('I:'):
+                        output_lines.append(line)
+                    else:
+                        break
+                output_grid = parse_grid_from_string('\n'.join(output_lines))
+                
+                if input_grid and output_grid:
+                    examples.append((input_grid, output_grid))
+            else:
+                # This is the test input (last I: without O:)
+                test_input_grid = parse_grid_from_string(part.strip())
         
         if not test_input_grid or not examples:
             # Mark for fallback
             fallback_indices.append(sample_idx)
             parsed_problems.append(None)
         else:
-            # Store parsed data
-            intro = ""
-            if "Training Examples:" in problem_text:
-                intro = problem_text.split("Training Examples:")[0].strip() + "\n\nTraining Examples:\n"
-            elif "Example 1:" in problem_text:
-                intro = problem_text.split("Example 1:")[0].strip() + "\n\n"
-            
             parsed_problems.append({
                 'examples': examples,
                 'test_input': test_input_grid,
@@ -228,12 +239,13 @@ def augmented_voting_inference_batched(
             for aug_func, kwargs in aug_config:
                 aug_test_input = aug_func(aug_test_input, **kwargs)
             
-            # Reconstruct problem
+            # Reconstruct problem with I:/O: format
             augmented_problem = intro
-            for idx, (aug_input, aug_output) in enumerate(augmented_examples, 1):
-                augmented_problem += f"Example {idx}:\nInput:\n{grid_to_string(aug_input)}\n\nOutput:\n{grid_to_string(aug_output)}\n\n"
+            for aug_input, aug_output in augmented_examples:
+                augmented_problem += f"I:\n{grid_to_string(aug_input)}\nO:\n{grid_to_string(aug_output)}\n\n"
             
-            augmented_problem += f"Test Case:\nInput:\n{grid_to_string(aug_test_input)}\n\nOutput:"
+            # Add test input (last I: without O:)
+            augmented_problem += f"I:\n{grid_to_string(aug_test_input)}\nO:"
             
             # Create prompt
             messages = [{"role": "user", "content": augmented_problem}]
@@ -395,47 +407,52 @@ def evaluate_model_vllm(
     with open(eval_data_path, 'r') as f:
         eval_data = json.load(f)
     
-    # Sample examples from different levels
-    level_samples = {}
-    for level in range(1, 7):
-        level_data = [ex for ex in eval_data if ex['metadata']['level'] == level]
-        if level_data:
-            sampled = random.sample(level_data, min(max_samples_per_level, len(level_data)))
-            level_samples[level] = sampled
+    # Sample problems - since there's no level field, just sample randomly
+    # or group by source if you want to test different task types
+    if max_samples_per_level < len(eval_data):
+        sampled_data = random.sample(eval_data, max_samples_per_level)
+    else:
+        sampled_data = eval_data
+    
+    # Organize by source for reporting (optional)
+    source_samples = {}
+    for ex in sampled_data:
+        source = ex['metadata'].get('source', 'unknown')
+        if source not in source_samples:
+            source_samples[source] = []
+        source_samples[source].append(ex)
     
     # Handle different inference modes
     if inference_mode == "standard":
         # Prepare ALL prompts upfront for batch generation
         all_prompts = []
-        prompt_metadata = []  # Track which level/sample each prompt belongs to
+        prompt_metadata = []  # Track which sample each prompt belongs to
         
-        for level, samples in level_samples.items():
-            for sample_idx, sample in enumerate(samples):
-                # Prepend system prompt if requested
-                if use_system_prompt and system_prompt:
-                    content = f"{system_prompt}\n\n{sample['problem']}"
-                else:
-                    content = sample['problem']
-                
-                messages = [{"role": "user", "content": content}]
-                formatted_prompt = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-                
-                # Create multiple attempts per problem
-                for attempt in range(attempts_per_problem):
-                    all_prompts.append(formatted_prompt)
-                    prompt_metadata.append({
-                        'level': level,
-                        'sample_idx': sample_idx,
-                        'sample': sample,
-                        'attempt': attempt
-                    })
+        for sample_idx, sample in enumerate(sampled_data):
+            # Prepend system prompt if requested
+            if use_system_prompt and system_prompt:
+                content = f"{system_prompt}\n\n{sample['problem']}"
+            else:
+                content = sample['problem']
+            
+            messages = [{"role": "user", "content": content}]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            
+            # Create multiple attempts per problem
+            for attempt in range(attempts_per_problem):
+                all_prompts.append(formatted_prompt)
+                prompt_metadata.append({
+                    'sample_idx': sample_idx,
+                    'sample': sample,
+                    'attempt': attempt
+                })
         
         print(f"\nGenerating {len(all_prompts)} outputs in batch...")
-        print(f"  {sum(len(s) for s in level_samples.values())} problems × {attempts_per_problem} attempts")
+        print(f"  {len(sampled_data)} problems × {attempts_per_problem} attempts")
         
         # Generate ALL outputs in ONE batch (with LoRA if enabled)
         if use_lora:
@@ -453,15 +470,13 @@ def evaluate_model_vllm(
         # Collect all samples with metadata
         all_samples = []
         all_metadata = []
-        for level, samples in level_samples.items():
-            for sample_idx, sample in enumerate(samples):
-                all_samples.append(sample)
-                all_metadata.append({
-                    'level': level,
-                    'sample_idx': sample_idx,
-                    'sample': sample,
-                    'attempt': 0
-                })
+        for sample_idx, sample in enumerate(sampled_data):
+            all_samples.append(sample)
+            all_metadata.append({
+                'sample_idx': sample_idx,
+                'sample': sample,
+                'attempt': 0
+            })
         
         print(f"  Processing {len(all_samples)} problems in batched mode...")
         
@@ -502,12 +517,13 @@ def evaluate_model_vllm(
         for i, (output, metadata) in enumerate(outputs_with_metadata):
             # Only print first attempt of each problem
             if metadata['attempt'] == 0 and examples_printed < 10:
-                level = metadata['level']
                 sample_idx = metadata['sample_idx']
                 sample = metadata['sample']
+                source = sample['metadata'].get('source', 'unknown')
+                problem_name = sample['metadata'].get('problem_name', f'Problem {sample_idx}')
                 generated_text = output.outputs[0].text
                 
-                print(f"Problem {examples_printed + 1} (Level {level}, Sample {sample_idx}):")
+                print(f"Problem {examples_printed + 1} ({source}: {problem_name}):")
                 print(f"Input:\n{sample['problem'][:200]}..." if len(sample['problem']) > 200 else f"Input:\n{sample['problem']}")
                 print(f"\nGenerated Output:\n{generated_text}\n")
                 print(f"Expected:\n{sample['answer']}\n")
@@ -519,20 +535,22 @@ def evaluate_model_vllm(
         print(f"{'='*60}\n")
     
     # Initialize results tracking
-    results = {f"level_{level}": {"correct": 0, "total": 0} for level in range(1, 7)}
-    results["overall"] = {"correct": 0, "total": 0}
+    results = {"overall": {"correct": 0, "total": 0}}
+    # Track by source as well
+    for source in source_samples.keys():
+        results[source] = {"correct": 0, "total": 0}
     
     # Track which problems have been solved (for attempts_per_problem > 1)
     solved_problems = set()
     
     # Process outputs
     for i, (output, metadata) in enumerate(outputs_with_metadata):
-        level = metadata['level']
         sample_idx = metadata['sample_idx']
         sample = metadata['sample']
         attempt = metadata['attempt']
+        source = sample['metadata'].get('source', 'unknown')
         
-        problem_key = (level, sample_idx)
+        problem_key = sample_idx
         
         # Skip if already solved this problem
         if problem_key in solved_problems:
@@ -540,7 +558,8 @@ def evaluate_model_vllm(
         
         # Only count each problem once (on first attempt)
         if attempt == 0:
-            results[f"level_{level}"]["total"] += 1
+            if source in results:
+                results[source]["total"] += 1
             results["overall"]["total"] += 1
         
         # Extract generated text
@@ -552,13 +571,16 @@ def evaluate_model_vllm(
         
         if is_correct:
             if problem_key not in solved_problems:
-                results[f"level_{level}"]["correct"] += 1
+                if source in results:
+                    results[source]["correct"] += 1
                 results["overall"]["correct"] += 1
                 solved_problems.add(problem_key)
-                print(f"✓ Level {level}, Problem {sample_idx} (attempt {attempt + 1}/{attempts_per_problem})")
+                problem_name = sample['metadata'].get('problem_name', f'Problem {sample_idx}')
+                print(f"✓ {source}: {problem_name} (attempt {attempt + 1}/{attempts_per_problem})")
         elif attempt == attempts_per_problem - 1:
             # Last attempt failed
-            print(f"✗ Level {level}, Problem {sample_idx} (failed all {attempts_per_problem} attempts)")
+            problem_name = sample['metadata'].get('problem_name', f'Problem {sample_idx}')
+            print(f"✗ {source}: {problem_name} (failed all {attempts_per_problem} attempts)")
     
     # Calculate accuracies
     for key in results:
@@ -570,10 +592,10 @@ def evaluate_model_vllm(
     print("EVALUATION RESULTS")
     print(f"{'='*60}")
     print(f"Overall: {results['overall']['correct']}/{results['overall']['total']} = {results['overall']['accuracy']:.2%}")
-    for level in range(1, 7):
-        level_key = f"level_{level}"
-        if results[level_key]["total"] > 0:
-            print(f"  Level {level}: {results[level_key]['correct']}/{results[level_key]['total']} = {results[level_key]['accuracy']:.2%}")
+    print("\nResults by source:")
+    for source in sorted(results.keys()):
+        if source != "overall" and results[source]["total"] > 0:
+            print(f"  {source}: {results[source]['correct']}/{results[source]['total']} = {results[source]['accuracy']:.2%}")
     print(f"{'='*60}\n")
     
     # Cleanup
@@ -595,7 +617,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval-data", default="generated_data/eval_conceptarc_data.json",
                         help="Path to evaluation data (default: generated_data/eval_data.json)")
     parser.add_argument("--samples-per-level", type=int, default=20,
-                        help="Max samples per level (default: 20)")
+                        help="Max samples to evaluate (default: 20, old param name kept for compatibility)")
     parser.add_argument("--attempts", type=int, default=1,
                         help="Attempts per problem (default: 1, only for standard mode)")
     parser.add_argument("--temperature", type=float, default=0.7,
