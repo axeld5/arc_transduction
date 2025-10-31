@@ -142,7 +142,6 @@ def run_sft(
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=base_model,
         max_seq_length=max_seq_length,
-        dtype=torch.float16,
         load_in_4bit=True,
         device_map=device_map,
         full_finetuning=False,
@@ -167,7 +166,7 @@ def run_sft(
         print("\n" + "="*80)
         print("SAMPLE FORMATTED TEXT (first 500 chars):")
         print("="*80)
-        print(dataset[0]['text'][:500])
+        print(dataset[0]['text'])
         print("="*80 + "\n")
     
     # Training arguments
