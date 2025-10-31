@@ -105,7 +105,7 @@ def config_data_for_sft(conversations: List[Dict[str, Any]], tokenizer):
             conv["messages"],
             tokenize=False,
             add_generation_prompt=False,
-        ).removeprefix('<bos>')
+        )
         formatted_texts.append(text)
     formatted_data = pd.Series(formatted_texts)
     formatted_data.name = "text"
@@ -149,21 +149,17 @@ def run_sft(
         device_map=device_map,
         full_finetuning=False,
     )
-    tokenizer = get_chat_template(
-        tokenizer,
-        chat_template = "gemma-3",
-    )
     model = FastLanguageModel.get_peft_model(
         model,
         r=lora_rank,
         lora_alpha=64,
         bias="none",
-        finetune_vision_layers     = False, # False if not finetuning vision layers
-        finetune_language_layers   = True, # False if not finetuning language layers
-        finetune_attention_modules = True, # False if not finetuning attention layers
-        finetune_mlp_modules       = True, # False if not finetuning MLP layers
-        #target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
-        #               "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"],
+        #finetune_vision_layers     = False, # False if not finetuning vision layers
+        #finetune_language_layers   = True, # False if not finetuning language layers
+        #finetune_attention_modules = True, # False if not finetuning attention layers
+        #finetune_mlp_modules       = True, # False if not finetuning MLP layers
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
+                       "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"],
         use_gradient_checkpointing="unsloth",
     )
     
@@ -208,12 +204,6 @@ def run_sft(
         args=args,
         train_dataset=dataset,
         processing_class=tokenizer,
-    )
-
-    trainer = train_on_responses_only(
-        trainer,
-        instruction_part = "<start_of_turn>user\n",
-        response_part = "<start_of_turn>model\n",
     )
     
     print("\n[SFT] Starting training...")
@@ -282,8 +272,8 @@ if __name__ == "__main__":
     sft_model_save_path, sft_merged_save_path, eval_results = run_sft(
         train_data_path="generated_data/train_conceptarc_data.json",
         eval_data_path="generated_data/eval_conceptarc_data.json",
-        output_dir="gemma_3_27b_conceptarc_sft",
-        base_model="unsloth/gemma-3-27b-it",
+        output_dir="qwen3_14b_conceptarc_sft",
+        base_model="Qwen/Qwen3-14B",
         learning_rate=2e-4,
         num_train_epochs=1,
         per_device_batch_size=1,
